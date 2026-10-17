@@ -3,10 +3,10 @@
 This is the hackathon starting point: a thin API that accepts a chat prompt and
 runs it through the firewall before forwarding it to an LLM.
 
-The firewall currently redacts PII and blocks prompt-injection attempts; the
-LLM itself is still mocked and echoes the cleaned text back to the caller. The
-service also serves the chat UI at ``/`` and the analytics dashboard at
-``/admin``.
+The firewall currently redacts PII and credentials and blocks prompt-injection
+attempts; the LLM itself is still mocked and echoes the cleaned text back to the
+caller. The service also serves the chat UI at ``/`` and the analytics dashboard
+at ``/admin``.
 """
 
 import re
@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from audit_log import log_event, read_events
 from firewall import redact_pii
 from ml_guard import check_injection, explain_injection
+from sanitize import SECRET_PATTERNS, sanitize_code
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -58,6 +59,21 @@ def _as_count(value: object) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _empty_secret_counts() -> dict[str, int]:
+    """Return a zeroed credential counter for every supported secret type."""
+    return {key: 0 for key in SECRET_PATTERNS}
+
+
+def _secret_counts(value: object) -> dict[str, int]:
+    """Normalize stored credential-redaction counts into known integer keys."""
+    counts = _empty_secret_counts()
+    if not isinstance(value, dict):
+        return counts
+    for key in counts:
+        counts[key] = _as_count(value.get(key))
+    return counts
 
 
 def _suspicious_words(value: object) -> list[str]:
@@ -109,14 +125,18 @@ def _record_request(
     decision: str,
     suspicious_words: list[str] | None = None,
     confidence: float | None = None,
+    secret_counts: dict[str, int] | None = None,
 ) -> None:
-    """Persist one encrypted, PII-safe request event for analytics."""
+    """Persist one encrypted, redacted request event for analytics."""
     pii_counts = _pii_counts_from_logs(firewall_log)
+    normalized_secrets = _secret_counts(secret_counts)
     event: dict[str, object] = {
         "kind": "chat_request",
         "decision": decision,
         "pii_counts": pii_counts,
         "pii_total": sum(pii_counts.values()),
+        "secret_counts": normalized_secrets,
+        "secret_total": sum(normalized_secrets.values()),
         "preview": _preview(cleaned_text),
         "suspicious_words": (suspicious_words or [])[:5],
     }
@@ -150,6 +170,8 @@ def analytics() -> dict[str, object]:
 
     pii_totals = _empty_pii_counts()
     pii_requests = 0
+    secret_totals = _empty_secret_counts()
+    secret_requests = 0
     blocked = 0
 
     for event in events:
@@ -168,6 +190,13 @@ def analytics() -> dict[str, object]:
             pii_totals[key] += count
         if sum(normalized.values()) > 0:
             pii_requests += 1
+
+        normalized_secrets = _secret_counts(event.get("secret_counts"))
+        for key, count in normalized_secrets.items():
+            secret_totals[key] += count
+        if sum(normalized_secrets.values()) > 0:
+            secret_requests += 1
+
         if str(event.get("decision", "")).lower() == "blocked":
             blocked += 1
 
@@ -191,6 +220,7 @@ def analytics() -> dict[str, object]:
         confidence = event.get("confidence")
         decision = str(event.get("decision", "passed")).lower()
         preview = str(event.get("preview") or event.get("cleaned_text") or "")
+        normalized_secrets = _secret_counts(event.get("secret_counts"))
 
         # Older blocked records may predate stored attributions. Re-derive them
         # from the redacted preview so Explainability stays complete.
@@ -210,6 +240,8 @@ def analytics() -> dict[str, object]:
                 "preview": preview,
                 "pii_counts": normalized,
                 "pii_total": sum(normalized.values()),
+                "secret_counts": normalized_secrets,
+                "secret_total": sum(normalized_secrets.values()),
                 "suspicious_words": words,
                 "confidence": confidence if isinstance(confidence, (int, float)) else None,
             }
@@ -219,11 +251,14 @@ def analytics() -> dict[str, object]:
         "total_requests": total,
         "pii_redacted": sum(pii_totals.values()),
         "pii_requests": pii_requests,
+        "secrets_redacted": sum(secret_totals.values()),
+        "secrets_requests": secret_requests,
         "injection_blocked": blocked,
         "passed": passed,
         "blocked": blocked,
         "block_rate": round((blocked / total) * 100, 1) if total else 0.0,
         "pii_types": pii_totals,
+        "secret_types": secret_totals,
         "recent_events": recent_events,
         "generated_at": datetime.now(timezone.utc)
         .isoformat(timespec="seconds")
@@ -235,13 +270,22 @@ def analytics() -> dict[str, object]:
 def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
     """Run a prompt through the firewall and return the (mock) LLM reply.
 
-    PII is redacted first, then the cleaned text is classified by the ML guard.
-    Injections are rejected with a 400, top trigger words, and an audit log; they
-    never reach the LLM. Safe prompts are echoed back by the mock LLM.
+    PII and credentials are redacted first, then the sanitized text is classified
+    by the ML guard. Injections are rejected with a 400, top trigger words, and
+    an audit log; they never reach the LLM. Safe prompts are echoed back by the
+    mock LLM.
     """
     result = redact_pii(request.text)
-    cleaned_text = result["cleaned_text"]
+    pii_cleaned_text = result["cleaned_text"]
+
+    sanitized_result = sanitize_code(pii_cleaned_text)
+    cleaned_text = sanitized_result["sanitized_code"]
+    secret_counts = _secret_counts(sanitized_result["detections"])
     firewall_log = list(result["logs"])
+
+    for secret_type, count in secret_counts.items():
+        if count:
+            firewall_log.append(f"Redacted {count} {secret_type}")
 
     guard = check_injection(cleaned_text)
     if guard["is_injection"]:
@@ -258,6 +302,7 @@ def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
             decision="blocked",
             suspicious_words=suspicious_words,
             confidence=confidence,
+            secret_counts=secret_counts,
         )
         return JSONResponse(
             status_code=400,
@@ -276,6 +321,7 @@ def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
         cleaned_text=cleaned_text,
         firewall_log=firewall_log,
         decision="passed",
+        secret_counts=secret_counts,
     )
 
     return {
