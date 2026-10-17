@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>AI Firewall - SOC Analytics</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Crect%20width='24'%20height='24'%20rx='6'%20fill='%234f46e5'/%3E%3Cpath%20d='M12%204l6%202.5v4.3c0%203.6-2.5%206.7-6%208.2-3.5-1.5-6-4.6-6-8.2V6.5L12%204z'%20fill='none'%20stroke='white'%20stroke-width='1.5'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+              mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+            },
+            boxShadow: {
+              panel: "0 24px 60px -28px rgba(0, 0, 0, 0.85)",
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      [hidden] {
+        display: none !important;
+      }
+      main,
+      main > section {
+        min-width: 0;
+      }
+      section[aria-label="Analytics charts"] > article {
+        min-width: 0;
+      }
+      #decision-chart,
+      #pii-chart {
+        max-width: 100%;
+      }
+      body {
+        background-color: #050810;
+        background-image:
+          radial-gradient(1000px circle at 8% -8%, rgba(79, 70, 229, 0.2), transparent 52%),
+          radial-gradient(800px circle at 92% 0%, rgba(14, 165, 233, 0.1), transparent 48%),
+          radial-gradient(700px circle at 50% 110%, rgba(16, 185, 129, 0.06), transparent 58%);
+        background-attachment: fixed;
+      }
+      body::before {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        content: "";
+        background-image:
+          linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px);
+        background-size: 42px 42px;
+        mask-image: linear-gradient(to bottom, black, transparent 85%);
+      }
+      .scrollbar {
+        scrollbar-width: thin;
+        scrollbar-color: #334155 transparent;
+      }
+      .scrollbar::-webkit-scrollbar {
+        width: 7px;
+        height: 7px;
+      }
+      .scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .scrollbar::-webkit-scrollbar-thumb {
+        background: #334155;
+        border-radius: 9999px;
+      }
+      .scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #475569;
+      }
+      .status-dot {
+        box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+        animation: statusPulse 2.4s infinite;
+      }
+      @keyframes statusPulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.42);
+        }
+        70% {
+          box-shadow: 0 0 0 6px rgba(52, 211, 153, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+        }
+      }
+      @keyframes valueFlash {
+        0% {
+          color: #f8fafc;
+          transform: translateY(0);
+        }
+        40% {
+          color: #a5b4fc;
+          transform: translateY(-2px);
+        }
+        100% {
+          color: #f8fafc;
+          transform: translateY(0);
+        }
+      }
+      .value-flash {
+        animation: valueFlash 420ms ease-out;
+      }
+      #connection-status[data-state="live"] {
+        border-color: rgba(16, 185, 129, 0.3);
+        background-color: rgba(16, 185, 129, 0.1);
+        color: #6ee7b7;
+      }
+      #connection-status[data-state="live"] #connection-dot {
+        background-color: #34d399;
+        animation: statusPulse 2.4s infinite;
+      }
+      #connection-status[data-state="error"] {
+        border-color: rgba(244, 63, 94, 0.3);
+        background-color: rgba(244, 63, 94, 0.1);
+        color: #fda4af;
+      }
+      #connection-status[data-state="error"] #connection-dot {
+        background-color: #fb7185;
+      }
+      .spin {
+        animation: spin 900ms linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .audit-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 9999px;
+        border: 1px solid;
+        padding: 3px 8px;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        line-height: 1;
+      }
+      .audit-badge-passed {
+        border-color: rgba(16, 185, 129, 0.28);
+        background-color: rgba(16, 185, 129, 0.1);
+        color: #6ee7b7;
+      }
+      .audit-badge-blocked {
+        border-color: rgba(244, 63, 94, 0.3);
+        background-color: rgba(244, 63, 94, 0.12);
+        color: #fda4af;
+      }
+      .audit-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 5px;
+        border: 1px solid #334155;
+        background-color: rgba(30, 41, 59, 0.55);
+        padding: 2px 6px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 9px;
+        line-height: 1.35;
+        color: #cbd5e1;
+        white-space: nowrap;
+      }
+      .audit-chip-ssn {
+        border-color: rgba(56, 189, 248, 0.28);
+        background-color: rgba(56, 189, 248, 0.08);
+        color: #7dd3fc;
+      }
+      .audit-chip-email {
+        border-color: rgba(251, 191, 36, 0.26);
+        background-color: rgba(251, 191, 36, 0.08);
+        color: #fcd34d;
+      }
+      .audit-chip-card {
+        border-color: rgba(167, 139, 250, 0.28);
+        background-color: rgba(167, 139, 250, 0.08);
+        color: #c4b5fd;
+      }
+      .audit-chip-pass {
+        border-color: rgba(16, 185, 129, 0.24);
+        background-color: rgba(16, 185, 129, 0.08);
+        color: #6ee7b7;
+      }
+      .audit-trigger-pill {
+        display: inline-flex;
+        max-width: 190px;
+        align-items: center;
+        gap: 5px;
+        overflow: hidden;
+        border: 1px solid rgba(251, 113, 133, 0.36);
+        border-radius: 9999px;
+        background:
+          linear-gradient(180deg, rgba(244, 63, 94, 0.18), rgba(159, 18, 57, 0.1)),
+          rgba(127, 29, 29, 0.15);
+        padding: 3px 8px 3px 7px;
+        color: #fecdd3;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 9px;
+        font-weight: 600;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.05),
+          0 0 14px -9px rgba(251, 113, 133, 0.95);
+      }
+      .audit-trigger-pill::before {
+        width: 4px;
+        height: 4px;
+        flex: 0 0 4px;
+        border-radius: 9999px;
+        background: #fb7185;
+        box-shadow: 0 0 7px rgba(251, 113, 133, 0.95);
+        content: "";
+      }
+      .audit-trigger-pill:hover {
+        border-color: rgba(251, 113, 133, 0.58);
+        background-color: rgba(244, 63, 94, 0.16);
+      }
+      .audit-trigger-empty {
+        display: inline-flex;
+        width: 20px;
+        height: 20px;
+        align-items: center;
+        justify-content: center;
+        border: 1px dashed rgba(71, 85, 105, 0.55);
+        border-radius: 9999px;
+        color: #475569;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        font-size: 10px;
+      }
+      .audit-confidence-track {
+        height: 3px;
+        overflow: hidden;
+        border-radius: 9999px;
+        background-color: #172033;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+      }
+      .audit-confidence-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #e11d48, #fb7185);
+        box-shadow: 0 0 8px rgba(251, 113, 133, 0.48);
+        transition: width 240ms ease;
+      }
+      .audit-row {
+        transition: background-color 140ms ease;
+      }
+      .audit-row[data-decision="blocked"] {
+        background: linear-gradient(90deg, rgba(127, 29, 29, 0.09), transparent 34%);
+      }
+      .audit-row[data-decision="blocked"] td:first-child {
+        box-shadow: inset 2px 0 0 rgba(244, 63, 94, 0.55);
+      }
+      .audit-row:hover {
+        background-color: rgba(30, 41, 59, 0.25);
+      }
+      .audit-row[data-decision="blocked"]:hover {
+        background:
+          linear-gradient(90deg, rgba(244, 63, 94, 0.1), rgba(30, 41, 59, 0.2) 72%),
+          rgba(30, 41, 59, 0.12);
+      }
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .fade-up {
+        animation: fadeUp 240ms ease-out both;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .status-dot,
+        .value-flash,
+        .fade-up {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body class="h-full font-sans text-slate-200 antialiased">
+    <div class="relative mx-auto flex min-h-full max-w-[1500px] flex-col px-4 py-5 sm:px-6 lg:px-8">
+      <header class="flex flex-wrap items-center justify-between gap-4">
+        <a href="/" class="group flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60">
+          <div
+            class="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-900/40 transition group-hover:shadow-indigo-800/60"
+          >
+            <svg class="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 15.5v-2m3.5 2V11m3.5 4.5V9" />
+            </svg>
+          </div>
+          <div>
+            <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-indigo-300/80">Security Operations Center</p>
+            <h1 class="text-lg font-semibold tracking-tight text-white sm:text-xl">
+              AI Firewall <span class="text-slate-600">·</span> Analytics
+            </h1>
+          </div>
+        </a>
+
+        <nav aria-label="Primary" class="flex items-center gap-2 rounded-xl border border-slate-800/80 bg-slate-900/55 p-1 backdrop-blur">
+          <a
+            href="/"
+            class="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-400 transition hover:bg-slate-800/70 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16v10H8l-4 4V6z" />
+            </svg>
+            Secure Chat
+          </a>
+          <a
+            href="/admin"
+            aria-current="page"
+            class="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/15 px-3 py-2 text-xs font-semibold text-indigo-200 shadow-sm shadow-indigo-950/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
+            </svg>
+            Admin Dashboard
+          </a>
+        </nav>
+      </header>
+
+      <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span
+            id="connection-status"
+            data-state="loading"
+            role="status"
+            class="inline-flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] font-medium text-amber-300"
+          >
+            <span id="connection-dot" class="h-1.5 w-1.5 rounded-full bg-amber-400"></span>
+            <span id="connection-text">Connecting to audit stream</span>
+          </span>
+          <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-[11px] text-slate-400">
+            <svg class="h-3.5 w-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 11V8a5 5 0 0110 0v3m-11 0h12v9H6v-9z" />
+            </svg>
+            Encrypted audit trail
+          </span>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <p class="font-mono text-[10px] text-slate-500">
+            last sync <span id="last-updated" class="text-slate-400">--:--:--</span>
+          </p>
+          <button
+            id="refresh-button"
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-900/70 px-3 py-2 text-[11px] font-medium text-slate-300 transition hover:border-indigo-500/60 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 disabled:cursor-wait disabled:opacity-50"
+          >
+            <svg id="refresh-icon" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />
+            </svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div
+        id="error-banner"
+        hidden
+        role="alert"
+        class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-200"
+      >
+        <span class="flex items-center gap-2">
+          <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5m0 3h.01M10.3 3.9L2.4 18a2 2 0 001.7 3h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+          </svg>
+          <span id="error-text">Analytics stream unavailable.</span>
+        </span>
+        <span class="font-mono text-[10px] text-red-300/70">Retries automatically</span>
+      </div>
+
+      <main class="mt-5 flex-1">
+        <section class="grid gap-4 md:grid-cols-3" aria-label="Firewall metrics">
+          <article class="group relative overflow-hidden rounded-2xl border border-slate-800/80 bg-gradient-to-br from-slate-900/90 to-slate-950/80 p-5 shadow-panel backdrop-blur">
+            <div class="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-sky-500/10 blur-2xl"></div>
+            <div class="relative flex items-start justify-between gap-4">
+              <div>
+                <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Total Requests</p>
+                <p id="metric-total" class="mt-3 text-4xl font-semibold tracking-tight text-white">—</p>
+                <p id="metric-total-sub" class="mt-1.5 text-xs text-slate-500">All screened prompts</p>
+              </div>
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-sky-500/20 bg-sky-500/10 text-sky-300">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 19V9m5 10V5m5 14v-7m5 7V3" />
+                </svg>
+              </span>
+            </div>
+            <div class="relative mt-5 h-1 overflow-hidden rounded-full bg-slate-800">
+              <div class="h-full w-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-500"></div>
+            </div>
+          </article>
+
+          <article class="group relative overflow-hidden rounded-2xl border border-slate-800/80 bg-gradient-to-br from-slate-900/90 to-slate-950/80 p-5 shadow-panel backdrop-blur">
+            <div class="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-amber-500/10 blur-2xl"></div>
+            <div class="relative flex items-start justify-between gap-4">
+              <div>
+                <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">PII Redacted</p>
+                <p id="metric-pii" class="mt-3 text-4xl font-semibold tracking-tight text-white">—</p>
+                <p id="metric-pii-sub" class="mt-1.5 text-xs text-slate-500">Sensitive entities removed</p>
+              </div>
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-300">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 11V8a5 5 0 0110 0v3m-11 0h12v9H6v-9z" />
+                </svg>
+              </span>
+            </div>
+            <div class="relative mt-5 h-1 overflow-hidden rounded-full bg-slate-800">
+              <div class="h-full w-full rounded-full bg-gradient-to-r from-amber-500 to-orange-500"></div>
+            </div>
+          </article>
+
+          <article class="group relative overflow-hidden rounded-2xl border border-slate-800/80 bg-gradient-to-br from-slate-900/90 to-slate-950/80 p-5 shadow-panel backdrop-blur">
+            <div class="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-rose-500/10 blur-2xl"></div>
+            <div class="relative flex items-start justify-between gap-4">
+              <div>
+                <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Injection Blocked</p>
+                <p id="metric-blocked" class="mt-3 text-4xl font-semibold tracking-tight text-white">—</p>
+                <p id="metric-blocked-sub" class="mt-1.5 text-xs text-slate-500">0.0% block rate</p>
+              </div>
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-rose-500/20 bg-rose-500/10 text-rose-300">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9.5 9.5l5 5m0-5l-5 5" />
+                </svg>
+              </span>
+            </div>
+            <div class="relative mt-5 h-1 overflow-hidden rounded-full bg-slate-800">
+              <div class="h-full w-full rounded-full bg-gradient-to-r from-rose-500 to-red-500"></div>
+            </div>
+          </article>
+        </section>
+
+
+
+        <section class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)]" aria-label="Analytics charts">
+          <article class="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/55 p-5 shadow-panel backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="grid h-9 w-9 place-items-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3a9 9 0 109 9h-9V3z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 3.5A8.5 8.5 0 0120.5 9H15V3.5z" />
+                  </svg>
+                </span>
+                <div>
+                  <h2 class="text-sm font-semibold text-white">Traffic Disposition</h2>
+                  <p class="text-[11px] text-slate-500">Passed vs. blocked prompts</p>
+                </div>
+              </div>
+              <span class="rounded-full border border-slate-700/70 bg-slate-800/40 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-slate-400">Live ratio</span>
+            </div>
+
+            <div class="relative mt-3 h-[265px] sm:h-[295px]">
+              <canvas id="decision-chart" role="img" aria-label="Doughnut chart comparing passed and blocked requests"></canvas>
+            </div>
+
+            <div class="mt-1 flex items-center justify-center gap-7 text-[11px] text-slate-400">
+              <span class="inline-flex items-center gap-2">
+                <span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"></span>
+                Passed <strong id="legend-passed" class="font-mono font-semibold text-slate-200">0</strong>
+              </span>
+              <span class="inline-flex items-center gap-2">
+                <span class="h-2 w-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.5)]"></span>
+                Blocked <strong id="legend-blocked" class="font-mono font-semibold text-slate-200">0</strong>
+              </span>
+            </div>
+          </article>
+
+          <article class="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/55 p-5 shadow-panel backdrop-blur">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="flex items-center gap-3">
+                <span class="grid h-9 w-9 place-items-center rounded-lg border border-sky-500/20 bg-sky-500/10 text-sky-300">
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 19V5m0 14h16" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 16v-4m4 4V8m4 8v-6" />
+                  </svg>
+                </span>
+                <div>
+                  <h2 class="text-sm font-semibold text-white">Sensitive Data Intercepted</h2>
+                  <p class="text-[11px] text-slate-500">PII entities removed by type</p>
+                </div>
+              </div>
+              <span class="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-amber-300">Redaction breakdown</span>
+            </div>
+
+            <div class="relative mt-3 h-[265px] sm:h-[295px]">
+              <canvas id="pii-chart" role="img" aria-label="Bar chart showing counts of SSN, email, and credit card redactions"></canvas>
+            </div>
+
+            <p class="mt-1 text-center text-[10px] text-slate-600">
+              Each bar counts individual values replaced before the prompt reached the model.
+            </p>
+          </article>
+        </section>
+
+        <section class="mt-4 overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/55 shadow-panel backdrop-blur" aria-labelledby="threat-log-heading">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 px-5 py-4">
+            <div class="flex items-center gap-3">
+              <span class="relative grid h-9 w-9 place-items-center rounded-lg border border-rose-500/20 bg-rose-500/10 text-rose-300">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h10" />
+                </svg>
+                <span class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-slate-900"></span>
+              </span>
+              <div>
+                <h2 id="threat-log-heading" class="text-sm font-semibold text-white">Live Threat Log</h2>
+                <p class="text-[11px] text-slate-500">Decrypted audit events, newest first · PII stays redacted</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="hidden items-center gap-1.5 rounded-full border border-violet-500/25 bg-violet-500/10 px-2.5 py-1 text-[10px] font-medium text-violet-300 sm:inline-flex">
+                <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1m-8.6 8.6l-2.1 2.1" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                AI Explainability
+              </span>
+              <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-300">
+                <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
+                Live
+              </span>
+              <span id="log-count" class="rounded-full border border-slate-700/70 bg-slate-800/40 px-2.5 py-1 font-mono text-[10px] text-slate-400">0 events</span>
+            </div>
+          </div>
+
+          <div class="scrollbar max-h-[520px] overflow-auto">
+            <table class="w-full min-w-[1180px] border-collapse text-left">
+              <caption class="sr-only">Recent firewall decisions, redacted PII counts, AI trigger words, classifier confidence, and prompt previews</caption>
+              <thead class="sticky top-0 z-10 bg-[#09111e]/95 backdrop-blur">
+                <tr class="border-b border-slate-800/80 text-[9px] uppercase tracking-[0.18em] text-slate-500">
+                  <th scope="col" class="whitespace-nowrap px-5 py-3 font-semibold">Time</th>
+                  <th scope="col" class="whitespace-nowrap px-4 py-3 font-semibold">Decision</th>
+                  <th scope="col" class="whitespace-nowrap px-4 py-3 font-semibold">PII Redacted</th>
+                  <th scope="col" class="whitespace-nowrap px-4 py-3 font-semibold">
+                    <span class="flex items-center gap-1.5">
+                      <span class="h-1.5 w-1.5 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.85)]"></span>
+                      AI Trigger Words
+                    </span>
+                    <span class="mt-1 block font-mono text-[8px] font-normal normal-case tracking-[0.08em] text-slate-600">explain_injection()</span>
+                  </th>
+                  <th scope="col" class="whitespace-nowrap px-4 py-3 font-semibold">Threat Signals</th>
+                  <th scope="col" class="px-5 py-3 font-semibold">Prompt Preview</th>
+                </tr>
+              </thead>
+              <tbody id="threat-log-body" class="divide-y divide-slate-800/60 text-xs">
+                <tr id="threat-log-empty">
+                  <td colspan="6" class="px-5 py-14">
+                    <div class="flex flex-col items-center justify-center text-center">
+                      <span class="mb-3 grid h-11 w-11 place-items-center rounded-xl border border-slate-800 bg-slate-900 text-slate-500">
+                        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M9.5 12h5" />
+                        </svg>
+                      </span>
+                      <p class="text-xs font-medium text-slate-400">Waiting for security events</p>
+                      <p class="mt-1 text-[11px] text-slate-600">Send a prompt from Secure Chat and it will appear here.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/80 px-5 py-3 text-[10px] text-slate-600">
+            <span>
+              Showing the latest 50 audit events ·
+              <span class="font-mono text-slate-500">explain_injection()</span> attributions
+            </span>
+            <span class="font-mono">auto-refresh · 10s</span>
+          </div>
+        </section>
+      </main>
+
+      <footer class="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 pb-1 text-[10px] text-slate-600">
+        <span>AI Firewall v0.1.0 · SOC Analytics</span>
+        <span class="font-mono">encrypted audit stream · <span id="footer-count">0</span> events retained</span>
+      </footer>
+    </div>
+
+    <script async src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="/admin.js"></script>
+  </body>
+</html>

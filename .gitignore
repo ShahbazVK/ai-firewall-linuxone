@@ -149,6 +149,10 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# AI Firewall encrypted audit trail and local encryption key
+.audit_key
+audit.log.enc
+
 # Environments
 .env
 .envrc
