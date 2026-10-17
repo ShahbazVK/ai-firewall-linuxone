@@ -6,3 +6,4 @@ pycryptodome
 python-multipart
 PyPDF2
 slowapi
+httpx

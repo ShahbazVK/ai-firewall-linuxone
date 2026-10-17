@@ -1,4 +1,4 @@
-"""Encrypted audit trail for the AI Firewall.
+"""Encrypted audit trail for Sentinel AI.
 
 Each request decision is serialized as one JSON object, encrypted with
 AES-256-GCM, and appended to a local JSONL file. Every line carries its own
@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,6 +174,53 @@ def read_events() -> list[dict[str, Any]]:
         if isinstance(event, dict):
             events.append(event)
     return events
+
+
+def benchmark_encryption(iterations: int = 100) -> dict[str, Any]:
+    """Measure the AES-256-GCM path used to protect audit records.
+
+    Each iteration creates a fresh 12-byte nonce, authenticates the audit AAD,
+    encrypts a representative JSON payload, and serializes the resulting
+    nonce/tag/ciphertext token. This exercises the same primitives and wire
+    format as :func:`log_event` without touching the on-disk audit trail.
+
+    Returns total and average latency in milliseconds plus throughput. The
+    function intentionally keeps the measurement local and allocation-light so
+    the endpoint remains safe to expose in a demo.
+    """
+    if iterations <= 0:
+        raise ValueError("iterations must be greater than zero")
+
+    payload = json.dumps(
+        {
+            "kind": "benchmark",
+            "decision": "passed",
+            "preview": "AES-256-GCM audit record benchmark payload",
+            "pii_counts": {"ssn": 0, "email": 0, "credit_card": 0},
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    started = time.perf_counter()
+    for _ in range(iterations):
+        nonce = os.urandom(_NONCE_BYTES)
+        cipher = AES.new(_KEY, AES.MODE_GCM, nonce=nonce)
+        cipher.update(_AAD)
+        ciphertext, tag = cipher.encrypt_and_digest(payload)
+        base64.urlsafe_b64encode(nonce + tag + ciphertext)
+    elapsed = time.perf_counter() - started
+
+    total_ms = elapsed * 1000
+    average_ms = total_ms / iterations
+    return {
+        "algorithm": "AES-256-GCM",
+        "iterations": iterations,
+        "payload_bytes": len(payload),
+        "total_ms": round(total_ms, 4),
+        "avg_ms": round(average_ms, 4),
+        "ops_per_second": round(iterations / elapsed, 2) if elapsed else 0.0,
+    }
 
 
 # Convenient aliases for callers that prefer log-oriented names.

@@ -28,6 +28,11 @@ const refs = {
   metricPiiSub: document.getElementById("metric-pii-sub"),
   metricBlocked: document.getElementById("metric-blocked"),
   metricBlockedSub: document.getElementById("metric-blocked-sub"),
+  threatPanel: document.getElementById("threat-meter-panel"),
+  threatLevel: document.getElementById("threat-level"),
+  threatSummary: document.getElementById("threat-summary"),
+  threatBlockedCount: document.getElementById("threat-blocked-count"),
+  cryptoLatency: document.getElementById("crypto-latency"),
   legendPassed: document.getElementById("legend-passed"),
   legendBlocked: document.getElementById("legend-blocked"),
   lockdownPanel: document.getElementById("lockdown-panel"),
@@ -496,7 +501,7 @@ function createEmptyLogRow() {
 
   const hint = document.createElement("p");
   hint.className = "mt-1 text-[11px] text-slate-600";
-  hint.textContent = "Send a prompt from Secure Chat and it will appear here.";
+  hint.textContent = "Launch a probe from the Battle Arena and it will appear here.";
 
   wrapper.append(mark, title, hint);
   cell.appendChild(wrapper);
@@ -585,6 +590,74 @@ function renderLog(events, totalEvents) {
     : `${formatCount(items.length)} ${pluralize(items.length, "event")}`;
 }
 
+function renderThreatLevel(blocked) {
+  const count = toCount(blocked);
+  let state;
+  if (count >= 30) {
+    state = {
+      level: "critical",
+      label: "CRITICAL",
+      summary: "Sustained attack campaign · emergency lockdown recommended",
+    };
+  } else if (count >= 15) {
+    state = {
+      level: "high",
+      label: "HIGH",
+      summary: "Coordinated injection pressure · tighten screening policy",
+    };
+  } else if (count >= 5) {
+    state = {
+      level: "medium",
+      label: "MEDIUM",
+      summary: "Elevated adversarial activity · monitor classifier coverage",
+    };
+  } else {
+    state = {
+      level: "low",
+      label: "LOW",
+      summary: "No active injection pressure · defenses nominal",
+    };
+  }
+
+  if (refs.threatPanel.dataset.level !== state.level) {
+    refs.threatPanel.dataset.level = state.level;
+    refs.threatLevel.textContent = state.label;
+    flashValue(refs.threatLevel);
+  } else {
+    refs.threatLevel.textContent = state.label;
+  }
+  refs.threatSummary.textContent = state.summary;
+  refs.threatBlockedCount.textContent = formatCount(count);
+}
+
+async function loadBenchmark() {
+  if (!refs.cryptoLatency) return;
+  try {
+    const response = await fetch("/api/benchmark", {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`Benchmark failed (HTTP ${response.status})`);
+    }
+    const data = await response.json();
+    const average = Number(
+      data.avg_ms ?? data.average_ms ?? data.average_time_ms,
+    );
+    if (!Number.isFinite(average) || average < 0) {
+      throw new Error("Benchmark returned an invalid latency");
+    }
+    refs.cryptoLatency.textContent = `${average.toFixed(4)} ms/op`;
+    refs.cryptoLatency.title =
+      `${formatCount(data.iterations)} AES-256-GCM operations · ` +
+      `${formatCount(data.ops_per_second)} ops/sec`;
+  } catch (error) {
+    refs.cryptoLatency.textContent = "unavailable";
+    refs.cryptoLatency.title =
+      error instanceof Error ? error.message : "Crypto benchmark unavailable";
+  }
+}
+
 function renderAnalytics(data) {
   if (typeof data.lockdown === "boolean" && !lockdownBusy) {
     renderLockdown(data.lockdown);
@@ -610,6 +683,7 @@ function renderAnalytics(data) {
   setMetric(refs.metricTotal, total);
   setMetric(refs.metricPii, piiTotal);
   setMetric(refs.metricBlocked, blocked);
+  renderThreatLevel(blocked);
 
   refs.metricTotalSub.textContent =
     `${formatCount(passed)} passed · ${formatCount(blocked)} blocked`;
@@ -714,9 +788,13 @@ function init() {
 
   renderLockdown(lockdownActive);
   void loadAnalytics();
+  void loadBenchmark();
   window.setInterval(() => {
     if (!document.hidden) void loadAnalytics({ silent: true });
   }, REFRESH_INTERVAL_MS);
+  window.setInterval(() => {
+    if (!document.hidden) void loadBenchmark();
+  }, REFRESH_INTERVAL_MS * 6);
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) void loadAnalytics({ silent: true });
