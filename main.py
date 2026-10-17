@@ -9,26 +9,55 @@ caller. The service also serves the chat UI at ``/`` and the analytics dashboard
 at ``/admin``.
 """
 
+from __future__ import annotations
+
+import hmac
+import io
+import logging
+import os
 import re
+import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Header, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from PyPDF2 import PdfReader
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from audit_log import log_event, read_events
 from firewall import redact_pii
 from ml_guard import check_injection, explain_injection
 from sanitize import SECRET_PATTERNS, sanitize_code
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).resolve().parent
+
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "hackathon-secret")
+RATE_LIMIT = "15/minute"
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_PDF_PAGES = 100
+LOCKDOWN_MESSAGE = "SYSTEM LOCKDOWN: All traffic blocked due to active threat."
+
+# Process-local emergency stop. Run a single worker (or back this with shared
+# state) if the deployment scales horizontally.
+LOCKDOWN_MODE = False
+_lockdown_lock = threading.Lock()
 
 app = FastAPI(
     title="AI Firewall",
     description="Screens prompts before they reach an LLM.",
     version="0.1.0",
 )
+
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _PII_KEYS = ("ssn", "email", "credit_card")
 _PII_LABEL_TO_KEY = {
@@ -46,6 +75,39 @@ class ChatRequest(BaseModel):
     """Payload accepted by the /chat endpoint."""
 
     text: str
+
+
+class PdfPolicyError(ValueError):
+    """Rejection raised when a PDF fails an upload policy check."""
+
+
+def _lockdown_response() -> JSONResponse:
+    """Return the standard response used while lockdown mode is active."""
+    return JSONResponse(
+        status_code=503,
+        content={"error": LOCKDOWN_MESSAGE, "lockdown": True},
+    )
+
+
+def _authorized_admin(admin_key: str | None) -> bool:
+    """Check the admin header without leaking the configured key via timing."""
+    if not admin_key:
+        return False
+    return hmac.compare_digest(
+        admin_key.encode("utf-8"), ADMIN_API_KEY.encode("utf-8")
+    )
+
+
+@app.middleware("http")
+async def enforce_lockdown(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Reject screened traffic before rate-limit accounting while locked down."""
+    path = request.url.path.rstrip("/") or "/"
+    if LOCKDOWN_MODE and path in {"/chat", "/upload"}:
+        return _lockdown_response()
+    return await call_next(request)
 
 
 def _empty_pii_counts() -> dict[str, int]:
@@ -123,6 +185,7 @@ def _record_request(
     cleaned_text: str,
     firewall_log: list[str],
     decision: str,
+    source: str,
     suspicious_words: list[str] | None = None,
     confidence: float | None = None,
     secret_counts: dict[str, int] | None = None,
@@ -131,7 +194,8 @@ def _record_request(
     pii_counts = _pii_counts_from_logs(firewall_log)
     normalized_secrets = _secret_counts(secret_counts)
     event: dict[str, object] = {
-        "kind": "chat_request",
+        "kind": f"{source}_request",
+        "source": source,
         "decision": decision,
         "pii_counts": pii_counts,
         "pii_total": sum(pii_counts.values()),
@@ -259,6 +323,7 @@ def analytics() -> dict[str, object]:
         "block_rate": round((blocked / total) * 100, 1) if total else 0.0,
         "pii_types": pii_totals,
         "secret_types": secret_totals,
+        "lockdown": LOCKDOWN_MODE,
         "recent_events": recent_events,
         "generated_at": datetime.now(timezone.utc)
         .isoformat(timespec="seconds")
@@ -266,16 +331,13 @@ def analytics() -> dict[str, object]:
     }
 
 
-@app.post("/chat", response_model=None)
-def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
-    """Run a prompt through the firewall and return the (mock) LLM reply.
+def _screen_text(text: str, *, source: str) -> dict[str, object]:
+    """Run untrusted text through PII, credential, and ML screening.
 
-    PII and credentials are redacted first, then the sanitized text is classified
-    by the ML guard. Injections are rejected with a 400, top trigger words, and
-    an audit log; they never reach the LLM. Safe prompts are echoed back by the
-    mock LLM.
+    ``source`` is stored in the encrypted audit event so chat and PDF traffic
+    can be distinguished without storing either original payload.
     """
-    result = redact_pii(request.text)
+    result = redact_pii(text)
     pii_cleaned_text = result["cleaned_text"]
 
     sanitized_result = sanitize_code(pii_cleaned_text)
@@ -300,35 +362,204 @@ def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
             cleaned_text=cleaned_text,
             firewall_log=firewall_log,
             decision="blocked",
+            source=source,
             suspicious_words=suspicious_words,
             confidence=confidence,
             secret_counts=secret_counts,
         )
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Blocked: Prompt Injection Detected",
-                "cleaned_text": cleaned_text,
-                "firewall_log": firewall_log,
-                "confidence": confidence,
-                "suspicious_words": suspicious_words,
-            },
-        )
+        return {
+            "blocked": True,
+            "error": "Blocked: Prompt Injection Detected",
+            "cleaned_text": cleaned_text,
+            "firewall_log": firewall_log,
+            "confidence": confidence,
+            "suspicious_words": suspicious_words,
+        }
 
     firewall_log.append("ML check passed")
-    llm_response = cleaned_text
     _record_request(
         cleaned_text=cleaned_text,
         firewall_log=firewall_log,
         decision="passed",
+        source=source,
         secret_counts=secret_counts,
     )
-
     return {
-        "original_text": request.text,
+        "blocked": False,
         "cleaned_text": cleaned_text,
         "firewall_log": firewall_log,
-        "llm_response": llm_response,
+        "llm_response": cleaned_text,
     }
 
+
+def _extract_pdf_text(raw_pdf: bytes) -> tuple[str, int]:
+    """Extract plain text and page count from an in-memory PDF."""
+    reader = PdfReader(io.BytesIO(raw_pdf))
+    if reader.is_encrypted:
+        raise PdfPolicyError("Encrypted PDFs are not supported")
+
+    pages = len(reader.pages)
+    if pages == 0:
+        raise PdfPolicyError("The PDF contains no pages")
+    if pages > MAX_PDF_PAGES:
+        raise PdfPolicyError(f"PDF exceeds the {MAX_PDF_PAGES}-page limit")
+
+    text = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    return text, pages
+
+
+@app.post("/api/lockdown", response_model=None)
+def toggle_lockdown(
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+) -> dict[str, object] | JSONResponse:
+    """Toggle the emergency traffic block. Requires the admin header."""
+    global LOCKDOWN_MODE
+
+    if not _authorized_admin(x_admin_key):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized: valid X-Admin-Key required"},
+        )
+
+    with _lockdown_lock:
+        LOCKDOWN_MODE = not LOCKDOWN_MODE
+        active = LOCKDOWN_MODE
+
+    logger.warning("Lockdown mode %s", "enabled" if active else "disabled")
+    return {
+        "lockdown": active,
+        "message": (
+            LOCKDOWN_MESSAGE
+            if active
+            else "Lockdown cleared. Traffic is flowing normally."
+        ),
+    }
+
+
+@app.post("/chat", response_model=None)
+@limiter.shared_limit(RATE_LIMIT, scope="firewall")
+def chat(
+    request: Request, response: Response, payload: ChatRequest
+) -> dict[str, object] | JSONResponse:
+    """Run a prompt through the firewall and return the (mock) LLM reply.
+
+    PII and credentials are redacted first, then the sanitized text is classified
+    by the ML guard. Injections are rejected with a 400, top trigger words, and
+    an audit log; they never reach the LLM. Safe prompts are echoed back by the
+    mock LLM.
+    """
+    if LOCKDOWN_MODE:
+        return _lockdown_response()
+
+    screened = _screen_text(payload.text, source="chat")
+    if screened["blocked"]:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": screened["error"],
+                "cleaned_text": screened["cleaned_text"],
+                "firewall_log": screened["firewall_log"],
+                "confidence": screened["confidence"],
+                "suspicious_words": screened["suspicious_words"],
+            },
+        )
+
+    return {
+        "original_text": payload.text,
+        "cleaned_text": screened["cleaned_text"],
+        "firewall_log": screened["firewall_log"],
+        "llm_response": screened["llm_response"],
+    }
+
+
+@app.post("/upload", response_model=None)
+@limiter.shared_limit(RATE_LIMIT, scope="firewall")
+def upload_pdf(
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+) -> dict[str, object] | JSONResponse:
+    """Extract text from a PDF and screen it with the same firewall pipeline."""
+    if LOCKDOWN_MODE:
+        return _lockdown_response()
+
+    filename = Path(file.filename or "").name or "upload.pdf"
+    if (
+        not filename.lower().endswith(".pdf")
+        or file.content_type not in {"application/pdf", "application/x-pdf"}
+    ):
+        return JSONResponse(
+            status_code=415,
+            content={"error": "Only PDF files are supported"},
+        )
+
+    raw_pdf = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if not raw_pdf:
+        return JSONResponse(status_code=400, content={"error": "The PDF is empty"})
+    if len(raw_pdf) > MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": f"PDF exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"
+            },
+        )
+    if not raw_pdf[:1024].lstrip().startswith(b"%PDF-"):
+        return JSONResponse(
+            status_code=415,
+            content={"error": "The uploaded file is not a valid PDF"},
+        )
+
+    try:
+        extracted_text, pages = _extract_pdf_text(raw_pdf)
+    except PdfPolicyError as exc:
+        # Known policy rejections (encrypted, page cap) are safe to explain.
+        logger.warning("Rejected PDF upload %s: %s", filename, exc)
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        # PDF parsers raise a wide variety of exceptions on hostile input. Treat
+        # any parse failure as a client error rather than leaking a 500 or
+        # exposing parser internals.
+        logger.warning(
+            "Rejected PDF upload %s: %s",
+            filename,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Could not read PDF. The file may be corrupted or unsupported."
+            },
+        )
+
+    if not extracted_text:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": (
+                    "No extractable text found. Scanned or image-only PDFs "
+                    "are not supported."
+                )
+            },
+        )
+
+    screened = _screen_text(extracted_text, source="upload")
+    body: dict[str, object] = {
+        "filename": filename,
+        "pages": pages,
+        "cleaned_text": screened["cleaned_text"],
+        "firewall_log": screened["firewall_log"],
+    }
+    if screened["blocked"]:
+        body.update(
+            {
+                "error": screened["error"],
+                "confidence": screened["confidence"],
+                "suspicious_words": screened["suspicious_words"],
+            }
+        )
+        return JSONResponse(status_code=400, content=body)
+
+    body["llm_response"] = screened["llm_response"]
+    return body
 

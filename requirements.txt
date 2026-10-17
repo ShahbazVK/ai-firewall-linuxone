@@ -3,3 +3,6 @@ uvicorn
 scikit-learn
 joblib
 pycryptodome
+python-multipart
+PyPDF2
+slowapi

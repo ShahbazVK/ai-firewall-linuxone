@@ -191,6 +191,25 @@
                 placeholder="Ask the secured assistant…"
                 class="scrollbar max-h-32 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-relaxed text-slate-100 placeholder:text-slate-500 focus:outline-none"
               ></textarea>
+              <input
+                id="pdf-input"
+                type="file"
+                accept="application/pdf,.pdf"
+                class="sr-only"
+                tabindex="-1"
+              />
+              <button
+                id="upload-button"
+                type="button"
+                title="Upload a PDF (max 10 MB)"
+                aria-label="Upload PDF"
+                class="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-800/70 px-2.5 text-xs font-medium text-slate-300 transition hover:border-indigo-500/60 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 16V4m0 0L8 8m4-4l4 4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" />
+                </svg>
+                <span class="hidden sm:inline">Upload PDF</span>
+              </button>
               <button
                 id="send-button"
                 type="submit"
@@ -203,7 +222,7 @@
               </button>
             </form>
             <p class="mt-2 px-1 text-[10px] text-slate-500">
-              Enter to send · Shift + Enter for a new line · Max 2,000 characters
+              Enter to send · Shift + Enter for a new line · Max 2,000 characters · PDF max 10 MB · 15 req/min per IP
             </p>
           </div>
         </section>
@@ -280,8 +299,13 @@
       const input = document.getElementById("message-input");
       const form = document.getElementById("chat-form");
       const sendButton = document.getElementById("send-button");
+      const uploadButton = document.getElementById("upload-button");
+      const pdfInput = document.getElementById("pdf-input");
       const passedEl = document.getElementById("stat-passed");
       const blockedEl = document.getElementById("stat-blocked");
+
+      const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+      const MAX_PDF_CHAT_CHARS = 12_000;
 
       const ICONS = {
         bot:
@@ -470,11 +494,13 @@
 
       function updateSendState() {
         sendButton.disabled = busy || input.value.trim().length === 0;
+        uploadButton.disabled = busy;
       }
 
       function setBusy(value) {
         busy = value;
         form.setAttribute("aria-busy", String(value));
+        pdfInput.disabled = value;
         updateSendState();
       }
 
@@ -485,7 +511,123 @@
 
       function piiNote(data) {
         const logs = Array.isArray(data.firewall_log) ? data.firewall_log : [];
-        return logs.some((entry) => entry.startsWith("Redacted")) ? "PII redacted before inference" : "";
+        return logs.some((entry) => entry.startsWith("Redacted"))
+          ? "Sensitive data redacted before inference"
+          : "";
+      }
+
+      function uploadNote(data) {
+        const notes = [];
+        const pages = Number(data.pages);
+        if (Number.isInteger(pages) && pages > 0) {
+          notes.push(pages + (pages === 1 ? " page" : " pages"));
+        }
+        const sensitive = piiNote(data);
+        if (sensitive) notes.push(sensitive);
+        return notes.join(" · ");
+      }
+
+      function rateLimitDetail(response) {
+        const retryAfter = response.headers.get("Retry-After");
+        const suffix = retryAfter ? " Retry in " + retryAfter + "s." : " Try again shortly.";
+        return "Maximum 15 requests per minute per IP." + suffix;
+      }
+
+      async function uploadPdf(file) {
+        if (!file || busy) return;
+
+        const name = file.name || "upload.pdf";
+        if (file.size > MAX_UPLOAD_BYTES) {
+          addMessage("error", "PDF is too large", "Maximum upload size is 10 MB.");
+          addLog("Rejected PDF " + name + ": exceeds 10 MB", "error");
+          pdfInput.value = "";
+          return;
+        }
+
+        setBusy(true);
+        addMessage("user", "PDF upload · " + name);
+        showTyping();
+
+        try {
+          const body = new FormData();
+          body.append("file", file, name);
+          const response = await fetch("/upload", { method: "POST", body });
+
+          let data = {};
+          try {
+            data = await response.json();
+          } catch (parseError) {
+            data = {};
+          }
+          hideTyping();
+
+          const logs = Array.isArray(data.firewall_log) ? data.firewall_log : [];
+
+          if (response.ok) {
+            passedCount += 1;
+            const fullText = typeof data.cleaned_text === "string" ? data.cleaned_text.trim() : "";
+            const displayText = fullText.length > MAX_PDF_CHAT_CHARS
+              ? fullText.slice(0, MAX_PDF_CHAT_CHARS) +
+                "\n\n… UI preview truncated. The full sanitized text was returned by /upload."
+              : fullText;
+            addMessage(
+              "assistant",
+              displayText || "(No extractable text returned)",
+              uploadNote(data)
+            );
+            logs.forEach((entry) => addLog(entry, "pass"));
+          } else if (
+            response.status === 400 &&
+            /prompt injection/i.test(String(data.error || ""))
+          ) {
+            blockedCount += 1;
+            const confidence =
+              typeof data.confidence === "number"
+                ? Math.round(data.confidence * 100) + "%"
+                : "unknown";
+            addMessage(
+              "blocked",
+              "PDF Blocked by Firewall",
+              "Prompt injection detected · confidence " + confidence
+            );
+            logs.forEach((entry) => addLog(entry, "block"));
+            addLog("Injection confidence: " + confidence, "block");
+          } else if (response.status === 429) {
+            addMessage("error", "Rate limit reached", rateLimitDetail(response));
+            addLog("HTTP 429: rate limit exceeded", "error");
+          } else if (response.status === 503) {
+            addMessage(
+              "error",
+              "System lockdown active",
+              data.error || "All traffic is blocked while lockdown mode is active."
+            );
+            addLog("HTTP 503: lockdown mode active", "error");
+          } else {
+            addMessage(
+              "error",
+              "PDF upload failed (HTTP " + response.status + ")",
+              data.error || "The firewall could not process this PDF."
+            );
+            addLog(
+              "PDF upload failed: " + (data.error || "HTTP " + response.status),
+              "error"
+            );
+          }
+        } catch (error) {
+          hideTyping();
+          addMessage(
+            "error",
+            "Connection error",
+            "Could not reach the AI Firewall. Is the server running?"
+          );
+          addLog("Network error: " + error.message, "error");
+        } finally {
+          hideTyping();
+          pdfInput.value = "";
+          setBusy(false);
+          updateStats();
+          input.focus();
+        }
       }
 
       async function sendMessage() {
@@ -531,6 +673,16 @@
             );
             logs.forEach((entry) => addLog(entry, "block"));
             addLog("Injection confidence: " + confidence, "block");
+          } else if (response.status === 429) {
+            addMessage("error", "Rate limit reached", rateLimitDetail(response));
+            addLog("HTTP 429: rate limit exceeded", "error");
+          } else if (response.status === 503) {
+            addMessage(
+              "error",
+              "System lockdown active",
+              data.error || "All traffic is blocked while lockdown mode is active."
+            );
+            addLog("HTTP 503: lockdown mode active", "error");
           } else {
             addMessage(
               "error",
@@ -554,6 +706,15 @@
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         sendMessage();
+      });
+
+      uploadButton.addEventListener("click", () => {
+        if (!busy) pdfInput.click();
+      });
+
+      pdfInput.addEventListener("change", () => {
+        const file = pdfInput.files && pdfInput.files[0];
+        if (file) void uploadPdf(file);
       });
 
       input.addEventListener("keydown", (event) => {

@@ -1,6 +1,7 @@
 "use strict";
 
 const REFRESH_INTERVAL_MS = 10_000;
+const ADMIN_KEY = "hackathon-secret";
 const numberFormatter = new Intl.NumberFormat("en-US");
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -29,6 +30,11 @@ const refs = {
   metricBlockedSub: document.getElementById("metric-blocked-sub"),
   legendPassed: document.getElementById("legend-passed"),
   legendBlocked: document.getElementById("legend-blocked"),
+  lockdownPanel: document.getElementById("lockdown-panel"),
+  lockdownButton: document.getElementById("lockdown-button"),
+  lockdownButtonLabel: document.getElementById("lockdown-button-label"),
+  lockdownStatus: document.getElementById("lockdown-status"),
+  lockdownDot: document.getElementById("lockdown-dot"),
   logBody: document.getElementById("threat-log-body"),
   logCount: document.getElementById("log-count"),
   footerCount: document.getElementById("footer-count"),
@@ -37,6 +43,8 @@ const refs = {
 let decisionChart = null;
 let piiChart = null;
 let refreshing = false;
+let lockdownActive = false;
+let lockdownBusy = false;
 let latestChartState = { passed: 0, blocked: 0, piiTypes: {} };
 
 function toCount(value) {
@@ -65,6 +73,64 @@ function showError(message) {
 
 function hideError() {
   refs.errorBanner.hidden = true;
+}
+
+function renderLockdown(active) {
+  lockdownActive = Boolean(active);
+  const state = String(lockdownActive);
+  refs.lockdownPanel.dataset.active = state;
+  refs.lockdownButton.dataset.active = state;
+  refs.lockdownButton.setAttribute("aria-pressed", state);
+  refs.lockdownStatus.dataset.active = state;
+  refs.lockdownDot.dataset.active = state;
+  refs.lockdownButtonLabel.textContent = lockdownActive
+    ? "DEACTIVATE LOCKDOWN"
+    : "ACTIVATE LOCKDOWN";
+  refs.lockdownStatus.textContent = lockdownActive
+    ? "LOCKDOWN ACTIVE — all screened traffic blocked"
+    : "Traffic flowing normally";
+  document.body.classList.toggle("lockdown-active", lockdownActive);
+}
+
+async function toggleLockdown() {
+  if (lockdownBusy) return;
+  lockdownBusy = true;
+  refs.lockdownButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/lockdown", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "X-Admin-Key": ADMIN_KEY,
+      },
+    });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      data = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || `Lockdown request failed (HTTP ${response.status})`);
+    }
+    if (typeof data.lockdown !== "boolean") {
+      throw new Error("Lockdown endpoint returned an invalid response");
+    }
+
+    renderLockdown(data.lockdown);
+    hideError();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown lockdown error";
+    showError(`Lockdown control unavailable: ${message}`);
+  } finally {
+    lockdownBusy = false;
+    refs.lockdownButton.disabled = false;
+    void loadAnalytics({ silent: true });
+  }
 }
 
 function flashValue(element) {
@@ -520,6 +586,10 @@ function renderLog(events, totalEvents) {
 }
 
 function renderAnalytics(data) {
+  if (typeof data.lockdown === "boolean" && !lockdownBusy) {
+    renderLockdown(data.lockdown);
+  }
+
   const total = toCount(data.total_requests);
   const blocked = toCount(data.blocked ?? data.injection_blocked);
   const passed = data.passed == null
@@ -638,6 +708,11 @@ function init() {
     void loadAnalytics();
   });
 
+  refs.lockdownButton.addEventListener("click", () => {
+    void toggleLockdown();
+  });
+
+  renderLockdown(lockdownActive);
   void loadAnalytics();
   window.setInterval(() => {
     if (!document.hidden) void loadAnalytics({ silent: true });
