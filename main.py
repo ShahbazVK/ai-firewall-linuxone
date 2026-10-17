@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from firewall import redact_pii
 from ml_guard import check_injection
+from sanitize import sanitize_code
 
 app = FastAPI(
     title="AI Firewall",
@@ -37,9 +38,14 @@ def chat(request: ChatRequest) -> dict[str, object] | JSONResponse:
     """
     result = redact_pii(request.text)
     cleaned_text = result["cleaned_text"]
+
+    """My regex-based sanitizer for redacting secrets like API keys, tokens, etc."""
+
+    sanitized_result = sanitize_code(cleaned_text)
+    final_text = sanitized_result["sanitized_code"]
     firewall_log = list(result["logs"])
 
-    guard = check_injection(cleaned_text)
+    guard = check_injection(final_text)  
     if guard["is_injection"]:
         confidence = guard["confidence"]
         firewall_log.append(
