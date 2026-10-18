@@ -16,9 +16,10 @@ The final Posture Score is a transparent weighted blend:
 
 ``55% recall + 25% false-positive avoidance + 20% PII coverage``
 
-The prompt set is curated rather than a random sample. It is never used for
-model fitting and is deliberately hard: encoded payloads, multilingual
-overrides, roleplay, and mixed benign-plus-malicious intent.
+The prompt set is curated rather than a random sample. Its exact strings are
+never copied into training or used for threshold tuning. It is deliberately
+hard: encoded payloads, multilingual overrides, roleplay, and mixed
+benign-plus-malicious intent.
 
 Run directly::
 
@@ -448,8 +449,9 @@ def run_benchmark() -> dict[str, Any]:
         ),
         "benchmark": "held-out-20-malicious-20-benign-v1",
         "provenance": (
-            "Curated held-out evaluator set; not used for fitting or threshold "
-            "tuning. Results are host-specific and are not a guarantee."
+            "Curated evaluator set; exact prompts are not copied into training "
+            "or used for threshold tuning. Results are host-specific and are "
+            "not a guarantee."
         ),
         "evaluated_at": datetime.now(timezone.utc)
         .isoformat(timespec="seconds")

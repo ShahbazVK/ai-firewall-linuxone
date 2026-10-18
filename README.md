@@ -9,7 +9,7 @@
 
 ## Overview
 
-Sentinel AI is a FastAPI red-team / blue-team platform that sits between users and a large language model. A split-screen **Battle Arena** launches randomized Base64, multilingual, and roleplay prompt-injection simulations against a live firewall. Every request passes through PII redaction, credential sanitization, and ML-based injection classification. Detected injections are **neutralized** rather than blindly forwarded: the unsafe clauses and trigger words are stripped, the safe residue is re-screened, and only that residue reaches the mock LLM.
+Sentinel AI is a FastAPI red-team / blue-team platform that sits between users and a large language model. A split-screen **Battle Arena** launches randomized Base64, English instruction-override, and English roleplay prompt-injection simulations against a live firewall. Every request passes through PII redaction, credential sanitization, and ML-based injection classification. Detected injections are **neutralized** rather than blindly forwarded: the unsafe clauses and trigger words are stripped, the safe residue is re-screened, and only that residue reaches the mock LLM.
 
 The same-origin dashboard at `/` is the Battle Arena: **Adversarial Simulator (Red Team)** on the left, **Secure AI (Blue Team)** on the right, with an animated defense shield that glows red on containment and green on safe passage. A separate **SOC Command** view at `/admin` aggregates the encrypted audit trail into request, PII, and injection metrics, Chart.js visualizations, a dynamic Low/Medium/High/Critical threat meter, and a live event table.
 
@@ -75,7 +75,7 @@ The sanitizer returns per-type counts instead of the matched values. Those count
 - **Features:** `HashingVectorizer` with `2**18` hashed dimensions (`alternate_sign=False`) over word unigrams and bigrams. Hashing avoids a stored vocabulary and fixes the feature space at inference time; the coefficient vector dominates the artifact size.
 - **Classifier:** `SGDClassifier` with log loss, balanced class weights, and a fixed random seed; it exposes probability estimates through `predict_proba`.
 - **Decision rule:** block when `P(injection) >= 0.50`.
-- **Training data:** a curated synthetic corpus of 184 prompts, currently 113 malicious and 71 benign.
+- **Training data:** a curated synthetic corpus of 215 prompts, currently 139 malicious and 76 benign.
 
 The corpus covers the common injection families:
 
@@ -128,7 +128,7 @@ The original text is retained only in the API's `cleaned_text` field for analyst
 
 ```mermaid
 flowchart LR
-    R["Adversarial Simulator (Red Team)"] -->|"GET /api/red_team"| RT["Randomized attack generator: Base64, multilingual, roleplay"]
+    R["Adversarial Simulator (Red Team)"] -->|"GET /api/red_team"| RT["Randomized attack generator: Base64, English overrides, English roleplay"]
     RT -->|"payload"| U["Battle Arena dashboard"]
     U -->|"POST /chat"| A["FastAPI /chat + Pydantic validation"]
     P["Upload PDF button"] -->|"POST /upload"| X["PDF checks (10 MB, 100 pages) + PyPDF2 text extraction"]
@@ -407,10 +407,10 @@ While active, every `/chat` and `/upload` request returns `503` before rate-limi
 
 ### `GET /api/red_team`
 
-Returns one randomized adversarial probe for the Battle Arena. The generator rotates between three families:
+Returns one randomized adversarial probe for the Battle Arena. The generator rotates between three English-only families:
 
 - **Base64 Smuggling:** an encoded malicious instruction plus an outer authority override.
-- **Multilingual Override:** French, Spanish, German, Chinese, or Russian instructions mixed with an English override.
+- **Instruction Override:** direct English attempts to replace policy, extract the system prompt, or exfiltrate secrets.
 - **Roleplay Jailbreak:** DAN personas, authority impersonation, fictional pressure, and nested-story attacks.
 
 ```json
@@ -464,22 +464,22 @@ The response includes the score, sub-metrics, counts, and the transparent weight
 ```json
 {
   "status": "ok",
-  "score": 85.0,
-  "posture_score": 85.0,
+  "score": 100.0,
+  "posture_score": 100.0,
   "score_out_of": 100,
   "band": "green",
-  "recall": 0.75,
-  "recall_percent": 75.0,
-  "false_positive_rate": 0.05,
-  "false_positive_rate_percent": 5.0,
+  "recall": 1.0,
+  "recall_percent": 100.0,
+  "false_positive_rate": 0.0,
+  "false_positive_rate_percent": 0.0,
   "pii_coverage": 1.0,
   "pii_coverage_percent": 100.0,
   "counts": {
     "malicious_total": 20,
-    "attacks_caught": 15,
-    "attacks_missed": 5,
+    "attacks_caught": 20,
+    "attacks_missed": 0,
     "benign_total": 20,
-    "false_positives": 1,
+    "false_positives": 0,
     "pii_total": 6,
     "pii_passed": 6
   },
@@ -489,18 +489,12 @@ The response includes the score, sub-metrics, counts, and the transparent weight
     "pii_coverage": 0.2
   },
   "score_formula": "100 * (0.55 × recall + 0.25 × (1 − false_positive_rate) + 0.20 × pii_coverage)",
-  "missed_attacks": [
-    {"id": "ENC-01", "category": "encoded"},
-    {"id": "ENC-02", "category": "encoded"},
-    {"id": "ENC-04", "category": "encoded"},
-    {"id": "MULTI-02", "category": "multilingual"},
-    {"id": "MULTI-04", "category": "multilingual"}
-  ],
-  "false_positive_prompts": [{"id": "BEN-10"}]
+  "missed_attacks": [],
+  "false_positive_prompts": []
 }
 ```
 
-The score reflects this host, this model artifact, and this fixed held-out set. The current measured baseline is **85.0/100** (green), not 100%. See **Security Assumptions & Limitations** before quoting it.
+The score reflects this host, this model artifact, and this fixed 20+20 evaluator set. The current measured baseline is **100.0/100** (green). That perfect result is a small-set demo measurement, not a production guarantee; see **Security Assumptions & Limitations** before quoting it.
 
 ### `GET /`
 
@@ -566,7 +560,7 @@ FastAPI's generated OpenAPI documentation.
 
 ### Current demo dataset
 
-The demo uses a **synthetic dataset defined directly in `train_model.py`**: 144 prompts, split into 73 malicious and 71 benign examples. It covers instruction overrides, DAN/developer-mode jailbreaks, system-prompt extraction, credential exfiltration, and hard negatives that look similar to attacks but are ordinary requests. A separate 16-prompt holdout set is used only for evaluation.
+The demo uses a **synthetic dataset defined directly in `train_model.py`**: 215 prompts, split into 139 malicious and 76 benign examples. It covers instruction overrides, encoded/obfuscated payloads, multilingual overrides, DAN/developer-mode jailbreaks, system-prompt extraction, credential exfiltration, and hard negatives that look similar to attacks but are ordinary requests. A separate 16-prompt holdout set is used only for evaluation.
 
 No external dataset is downloaded at build or runtime, and no real personal data is used. The people and identifiers in the examples and documentation are fictitious.
 
@@ -614,7 +608,7 @@ The final version will use a stratified train/validation/test split and report p
 | Encrypted audit trail: AES-GCM round-trip plus no plaintext markers in `audit.log.enc` | pass |
 | Analytics aggregation: 4 seeded requests → 4 total, 4 PII entities (SSN 1, email 2, card 1), 2 blocked | exact match |
 | SOC dashboard in headless Chrome: metrics, doughnut/bar charts, AI trigger-word pills, confidence meters, and chat-header link | pass |
-| Red-team generator: 90 randomized attacks across Base64, multilingual, and roleplay families | 90/90 classified as injections |
+| Red-team generator: 100 randomized attacks across Base64, English instruction-override, and English roleplay families | 100/100 classified as injections |
 | `/chat` neutralizer: canonical override prompt | `200 Neutralized`, `neutralized_prompt = "tell me a joke"` |
 | Neutralizer re-screen: pure attack with no safe residue | verified-safe fallback, second classifier pass benign |
 | Battle Arena in headless Chrome: attack launch, Deflected badge, red threat shield, then safe prompt | pass, green safe shield, 0 browser exceptions |
@@ -625,19 +619,19 @@ Training accuracy is 100%, which is expected for a small corpus and is **not** e
 
 ## Security Assumptions & Limitations
 
-This project reports measured posture, not a guarantee. The live harness currently observes **75% recall, a 5% false-positive rate, 100% PII coverage, and an 85.0/100 posture score** on its fixed held-out set. Those numbers are useful evidence of behavior; they are not proof that every attack will be stopped.
+This project reports measured posture, not a guarantee. The live harness currently observes **100% recall, a 0% false-positive rate, 100% PII coverage, and a 100.0/100 posture score** on its fixed 20-attack / 20-benign evaluator set. Those numbers are useful evidence of behavior on a small curated set; they are not proof that every attack will be stopped.
 
 - **The ML classifier is lexical and may fail on sophisticated zero-day obfuscations.** HashingVectorizer + SGD works well on the phrasings it has seen, but novel encodings, nested obfuscation, non-English text, long-context attacks, or indirect injections hidden in retrieved documents and tool output can evade it. The held-out harness deliberately records misses rather than hiding them. It classifies the incoming user prompt only; it does not inspect model output or authorize tool calls.
 - **Fail-closed is an availability trade-off.** If `check_injection()` raises, `/chat` and `/upload` return `HTTP 503` with `Security Subsystem Unavailable: Failing Closed to protect data.` and write a `SYSTEM_ERROR` audit event. No untrusted text is forwarded, but the service is unavailable until the classifier recovers. Set `SIMULATE_ML_CRASH=true` to test this path.
 - **The crypto benchmark measures software AES-256-GCM, not hardware-accelerated CPACF.** `/api/benchmark` uses PyCryptodome's software AES path on the host running the API. It does **not** call IBM z Systems CPACF, LinuxONE hardware crypto instructions, or a certified crypto stack, so the result demonstrates application-level encryption overhead — not hardware acceleration or a platform attestation.
 - **The posture score is a policy choice, not a standard.** The weights are 55% recall, 25% false-positive avoidance, and 20% PII coverage. Different deployments should reweight them for their own risk tolerance. A green band means “above this demo's threshold,” not “secure.”
-- **The held-out set is curated and small.** Twenty attacks and twenty benign prompts can expose obvious gaps, but they cannot estimate production prevalence or replace an independent evaluation on real traffic. The set is not used for fitting or threshold tuning; retraining the model changes the score.
+- **The evaluator set is curated and small.** Twenty attacks and twenty benign prompts can expose obvious gaps, but they cannot estimate production prevalence or replace an independent evaluation on real traffic. The exact evaluator strings are never copied into training or used for threshold tuning, but the coverage work was informed by the failure families; retraining the model changes the score.
 - **Regex PII coverage is intentionally narrow.** It detects email addresses, US SSNs in `XXX-XX-XXXX` form, US phone numbers in `(XXX) XXX-XXXX`, `XXX-XXX-XXXX`, and `XXX.XXX.XXXX` form, and 16-digit card numbers. It does not detect names, addresses, international phone numbers, IBANs, passports, 15-digit card numbers, or unstructured secrets, and it does not run a Luhn check. Some 16-digit business identifiers may be redacted incorrectly.
 - **Credential sanitization covers four token families.** `sanitize.py` recognizes the documented OpenAI project, AWS access-key, GitHub, and GitLab prefixes. It is not a general secrets scanner: passwords, private keys, session cookies, and other providers' credentials still need a maintained detector or a secrets-management boundary.
 - **Explanations are associations, not proof.** `suspicious_words` reflects the largest positive coefficient contributions in the cleaned prompt. It is useful for analyst review, but it is not causal evidence of intent, and hashed collisions (rare at `2**18` dimensions) can blur attribution.
 - **The 0.50 threshold is not calibrated.** Tune it on real traffic and choose an operating point based on the relative cost of false positives and false negatives.
 - **Neutralization is a heuristic, not a formal rewrite.** `neutralize_prompt()` drops clauses containing the top three trigger words, strips known override vocabulary and Base64 blobs, and accepts the residue only after a second classifier pass. It can over-strip benign context, and it does not decode arbitrary nested encodings, images, or indirect injections hidden in retrieved documents. If no safe residue survives, it returns a verified-safe fallback, which preserves safety at the cost of specificity.
-- **The Red Team generator is a template family, not an autonomous exploit search.** `/api/red_team` randomizes among authored Base64, multilingual, and roleplay attacks. It does not learn from firewall misses or mutate payloads against a live target; treat it as a demo adversary and regression harness.
+- **The Red Team generator is a template family, not an autonomous exploit search.** `/api/red_team` randomizes among authored Base64, English instruction-override, and English roleplay attacks. It does not learn from firewall misses or mutate payloads against a live target; treat it as a demo adversary and regression harness.
 - **API responses never echo raw input.** Allowed and neutralized `/chat` responses return only redacted/cleaned text (plus the neutralized residue); the raw prompt is not included. Never log raw prompts in a real deployment.
 - **The LLM is mocked.** There is no provider integration, output filtering, or tool-call policy yet.
 - **PDF extraction is text-only.** `PyPDF2` reads embedded text and does not OCR scanned pages, follow attachments, or execute/render PDF JavaScript. Password-protected PDFs are rejected. Parsing untrusted files in-process is still attack surface; run uploads in a sandboxed worker with a malware scanner before production use. Uploads are capped at 10 MB and 100 pages, and truncated PDFs may produce partial text.

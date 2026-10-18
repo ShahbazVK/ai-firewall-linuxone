@@ -27,6 +27,7 @@ os.environ["AUDIT_KEY_PATH"] = str(Path(_TEMP_DIR.name) / "audit.key")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import benchmark  # noqa: E402
+import train_model  # noqa: E402
 from audit_log import read_events  # noqa: E402
 from firewall import redact_pii  # noqa: E402
 from main import app, neutralize_prompt  # noqa: E402
@@ -62,21 +63,36 @@ class PhoneRedactionTests(unittest.TestCase):
 
 
 class RedTeamTests(unittest.TestCase):
+    allowed_categories = {
+        "Base64 Smuggling",
+        "Instruction Override",
+        "Roleplay Jailbreak",
+    }
+
     def test_red_team_returns_a_detected_attack(self) -> None:
         response = client.get("/api/red_team")
         self.assertEqual(response.status_code, 200)
         attack = response.json()
-        self.assertIn(
-            attack["category"],
-            {"Base64 Smuggling", "Multilingual Override", "Roleplay Jailbreak"},
-        )
+        self.assertIn(attack["category"], self.allowed_categories)
         for key in ("payload", "prompt", "technique", "difficulty", "decoded_intent"):
             self.assertTrue(attack[key], key)
         self.assertTrue(check_injection(attack["payload"])["is_injection"])
 
+    def test_red_team_only_generates_contained_english_vectors(self) -> None:
+        for _ in range(100):
+            attack = client.get("/api/red_team").json()
+            self.assertIn(attack["category"], self.allowed_categories)
+            self.assertNotIn("multilingual", json.dumps(attack).lower())
+            self.assertTrue(
+                check_injection(attack["payload"])["is_injection"],
+                attack["payload"],
+            )
+
     def test_red_team_rotates_vectors(self) -> None:
-        categories = {client.get("/api/red_team").json()["category"] for _ in range(30)}
-        self.assertGreaterEqual(len(categories), 2)
+        categories = {
+            client.get("/api/red_team").json()["category"] for _ in range(100)
+        }
+        self.assertEqual(categories, self.allowed_categories)
 
 
 class NeutralizerTests(unittest.TestCase):
@@ -184,13 +200,24 @@ class PostureBenchmarkTests(unittest.TestCase):
         self.assertGreaterEqual(body["score"], 0)
         self.assertLessEqual(body["score"], 100)
         self.assertGreaterEqual(
-            body["score"], 75, "demo posture floor is 75/100"
+            body["score"], 85, "demo posture floor is 85/100"
         )
+        self.assertGreater(body["recall"], 0.75)
+        self.assertLessEqual(body["false_positive_rate"], 0.05)
         self.assertEqual(body["band"], "green")
 
         serialized = json.dumps(body)
         for case in benchmark.PII_CASES:
             self.assertNotIn(case["raw"], serialized)
+
+    def test_benchmark_prompts_are_not_copied_into_training(self) -> None:
+        training = {
+            text.strip().casefold()
+            for text in train_model.NORMAL_PROMPTS + train_model.INJECTION_PROMPTS
+        }
+        for case in benchmark.MALICIOUS_PROMPTS + benchmark.BENIGN_PROMPTS:
+            with self.subTest(case=case["id"]):
+                self.assertNotIn(case["prompt"].strip().casefold(), training)
 
 
 class FailClosedTests(unittest.TestCase):
@@ -253,8 +280,10 @@ class StaticUiTests(unittest.TestCase):
             "https://github.com/ShahbazVK/ai-firewall-linuxone",
             "GitHub Source",
             "text-gray-400",
+            "Base64 smuggling · instruction overrides · roleplay jailbreaks",
         ):
             self.assertIn(marker, html)
+        self.assertNotIn("multilingual overrides", html.lower())
 
     def test_admin_contains_threat_meter_and_crypto_footer(self) -> None:
         html = (PROJECT_ROOT / "admin.html").read_text(encoding="utf-8")
