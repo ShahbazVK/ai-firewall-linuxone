@@ -9,6 +9,7 @@ Run from the project root:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -24,10 +25,37 @@ os.environ["AUDIT_KEY_PATH"] = str(Path(_TEMP_DIR.name) / "audit.key")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from firewall import redact_pii  # noqa: E402
 from main import app, neutralize_prompt  # noqa: E402
 from ml_guard import check_injection  # noqa: E402
 
 client = TestClient(app)
+
+
+class PhoneRedactionTests(unittest.TestCase):
+    def test_redacts_supported_phone_formats(self) -> None:
+        for number in ("(469) 305-9536", "469-305-9536", "469.305.9536"):
+            with self.subTest(number=number):
+                result = redact_pii(f"Call {number} tomorrow.")
+                self.assertEqual(result["cleaned_text"], "Call [REDACTED_PHONE] tomorrow.")
+                self.assertIn("Redacted 1 phone", result["logs"])
+                self.assertNotIn(number, result["cleaned_text"])
+
+    def test_chat_api_never_echoes_the_raw_phone_number(self) -> None:
+        number = "(469) 305-9536"
+        response = client.post(
+            "/chat", json={"text": f"Call {number} tomorrow and confirm the meeting."}
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        serialized = json.dumps(body)
+        self.assertIn("[REDACTED_PHONE]", body["cleaned_text"])
+        self.assertNotIn(number, serialized)
+        self.assertNotIn("original_text", body)
+        self.assertIn("Redacted 1 phone", body["firewall_log"])
+
+        analytics = client.get("/api/analytics").json()
+        self.assertGreaterEqual(analytics["pii_types"]["phone"], 1)
 
 
 class RedTeamTests(unittest.TestCase):
@@ -102,6 +130,11 @@ class StaticUiTests(unittest.TestCase):
             'id="attack-card"',
             "DEFLECTED",
             "Threat Neutralized. The AI safely processed your request after stripping:",
+            "ATTACK CONTAINED",
+            "PROBE BLOCKED",
+            "https://github.com/ShahbazVK/ai-firewall-linuxone",
+            "GitHub Source",
+            "text-gray-400",
         ):
             self.assertIn(marker, html)
 

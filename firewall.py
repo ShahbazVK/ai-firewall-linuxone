@@ -1,8 +1,8 @@
 """PII redaction engine for the AI Firewall.
 
-Scans text for Social Security numbers, email addresses, and 16-digit credit
-card numbers, swaps each match for a labelled placeholder, and returns the
-sanitised text together with a human-readable audit log.
+Scans text for Social Security numbers, email addresses, US phone numbers, and
+16-digit credit card numbers, swaps each match for a labelled placeholder, and
+returns the sanitised text together with a human-readable audit log.
 """
 
 import re
@@ -25,11 +25,19 @@ EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 # Exactly 16 digits, optionally grouped by spaces or dashes in blocks of four.
 CREDIT_CARD_PATTERN = re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b")
 
+# US phone formats: (XXX) XXX-XXXX, XXX-XXX-XXXX, and XXX.XXX.XXXX.
+# Parenthesized area codes may be followed by an optional space; the final
+# separator accepts either a dash or a dot.
+PHONE_PATTERN = re.compile(
+    r"(?<!\d)(?:\(\d{3}\)\s*|\d{3}[.-])\d{3}[.-]\d{4}(?!\d)"
+)
+
 # (singular label, plural label, pattern, replacement) — applied in order.
 # Email runs first so a numeric local part is treated as an address rather than
 # a card number.
 _REDACTORS: tuple[tuple[str, str, re.Pattern[str], str], ...] = (
     ("email", "emails", EMAIL_PATTERN, "[REDACTED_EMAIL]"),
+    ("phone", "phones", PHONE_PATTERN, "[REDACTED_PHONE]"),
     ("SSN", "SSNs", SSN_PATTERN, "[REDACTED_SSN]"),
     ("credit card", "credit cards", CREDIT_CARD_PATTERN, "[REDACTED_CREDIT_CARD]"),
 )

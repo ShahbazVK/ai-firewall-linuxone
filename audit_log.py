@@ -196,7 +196,7 @@ def benchmark_encryption(iterations: int = 100) -> dict[str, Any]:
             "kind": "benchmark",
             "decision": "passed",
             "preview": "AES-256-GCM audit record benchmark payload",
-            "pii_counts": {"ssn": 0, "email": 0, "credit_card": 0},
+            "pii_counts": {"ssn": 0, "email": 0, "phone": 0, "credit_card": 0},
         },
         ensure_ascii=False,
         separators=(",", ":"),

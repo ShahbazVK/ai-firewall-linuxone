@@ -64,12 +64,14 @@ limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-_PII_KEYS = ("ssn", "email", "credit_card")
+_PII_KEYS = ("ssn", "email", "phone", "credit_card")
 _PII_LABEL_TO_KEY = {
     "SSN": "ssn",
     "SSNs": "ssn",
     "email": "email",
     "emails": "email",
+    "phone": "phone",
+    "phones": "phone",
     "credit card": "credit_card",
     "credit cards": "credit_card",
 }
@@ -786,7 +788,6 @@ def chat(
         return {
             "status": "Neutralized",
             "threat_neutralized": True,
-            "original_text": payload.text,
             "cleaned_text": screened["cleaned_text"],
             "neutralized_prompt": neutralized_prompt,
             "suspicious_words": suspicious_words,
@@ -797,7 +798,6 @@ def chat(
 
     return {
         "status": "Passed",
-        "original_text": payload.text,
         "cleaned_text": screened["cleaned_text"],
         "firewall_log": screened["firewall_log"],
         "llm_response": screened["llm_response"],

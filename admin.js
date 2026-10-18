@@ -268,17 +268,18 @@ function createPiiChart() {
   piiChart = new Chart(canvas, {
     type: "bar",
     data: {
-      labels: ["SSN", "Email", "Credit Card"],
+      labels: ["SSN", "Email", "Phone", "Credit Card"],
       datasets: [
         {
           label: "Entities redacted",
-          data: [0, 0, 0],
+          data: [0, 0, 0, 0],
           backgroundColor: [
             "rgba(56, 189, 248, 0.82)",
             "rgba(251, 191, 36, 0.82)",
+            "rgba(251, 113, 133, 0.82)",
             "rgba(167, 139, 250, 0.82)",
           ],
-          hoverBackgroundColor: ["#7dd3fc", "#fcd34d", "#c4b5fd"],
+          hoverBackgroundColor: ["#7dd3fc", "#fcd34d", "#fda4af", "#c4b5fd"],
           borderWidth: 0,
           borderRadius: 8,
           borderSkipped: false,
@@ -342,6 +343,7 @@ function syncChartsWithState() {
     piiChart.data.datasets[0].data = [
       toCount(latestChartState.piiTypes.ssn),
       toCount(latestChartState.piiTypes.email),
+      toCount(latestChartState.piiTypes.phone),
       toCount(latestChartState.piiTypes.credit_card),
     ];
     piiChart.update();
@@ -360,6 +362,7 @@ function updateCharts(passed, blocked, piiTypes) {
 const PII_ROWS = [
   ["ssn", "SSN", "audit-chip-ssn"],
   ["email", "Email", "audit-chip-email"],
+  ["phone", "Phone", "audit-chip-phone"],
   ["credit_card", "Card", "audit-chip-card"],
 ];
 
