@@ -285,6 +285,18 @@ class StaticUiTests(unittest.TestCase):
             self.assertIn(marker, html)
         self.assertNotIn("multilingual overrides", html.lower())
 
+    def test_telemetry_log_viewport_keeps_first_entry_visible(self) -> None:
+        html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+        for marker in (
+            'id="security-logs"',
+            "telemetry-entry",
+            "border-left-width: 2px",
+            "pb-4",
+            "h-[320px]",
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn("lg:h-[190px]", html)
+
     def test_admin_contains_threat_meter_and_crypto_footer(self) -> None:
         html = (PROJECT_ROOT / "admin.html").read_text(encoding="utf-8")
         for marker in (

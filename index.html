@@ -131,6 +131,23 @@
       .fade-in {
         animation: fadeIn 180ms ease-out;
       }
+      .telemetry-entry {
+        border-left-width: 2px;
+        border-left-style: solid;
+        border-radius: 0 0.375rem 0.375rem 0;
+      }
+      .telemetry-entry--pass {
+        border-left-color: rgba(16, 185, 129, 0.6);
+      }
+      .telemetry-entry--block {
+        border-left-color: rgba(239, 68, 68, 0.7);
+      }
+      .telemetry-entry--neutralize {
+        border-left-color: rgba(244, 63, 94, 0.6);
+      }
+      .telemetry-entry--error {
+        border-left-color: rgba(245, 158, 11, 0.7);
+      }
       @keyframes dotPulse {
         0%,
         80%,
@@ -599,7 +616,7 @@
         </section>
 
         <aside
-          class="glass-panel flex h-[220px] flex-col overflow-hidden rounded-2xl border border-slate-800/70 lg:col-span-2 lg:h-[190px]"
+          class="glass-panel flex h-[320px] flex-col overflow-hidden rounded-2xl border border-slate-800/70 lg:col-span-2"
         >
           <div class="flex items-center justify-between gap-3 border-b border-slate-800/80 px-4 py-3.5">
             <div class="flex items-center gap-2.5">
@@ -636,7 +653,7 @@
             </div>
           </div>
 
-          <div id="security-logs" aria-live="polite" class="scrollbar flex-1 space-y-2 overflow-y-auto px-3 py-3 font-mono text-[11px] leading-relaxed text-gray-200">
+          <div id="security-logs" aria-live="polite" class="scrollbar flex-1 space-y-2 overflow-y-auto px-3 pt-3 pb-4 font-mono text-[11px] leading-relaxed text-gray-200">
             <div id="logs-empty" class="flex h-full flex-col items-center justify-center px-6 text-center font-sans">
               <div class="mb-3 grid h-10 w-10 place-items-center rounded-xl border border-slate-800 bg-slate-900 text-slate-500">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -831,37 +848,34 @@
       function addLog(message, tone = "pass") {
         const styles = {
           pass: {
-            border: "border-emerald-500/60",
             text: "text-emerald-200",
             bg: "bg-emerald-500/5",
             tag: "PASS",
           },
           block: {
-            border: "border-red-500/70",
             text: "text-red-200",
             bg: "bg-red-500/5",
             tag: "BLOCK",
           },
           neutralize: {
-            border: "border-rose-500/60",
             text: "text-rose-100",
             bg: "bg-rose-500/5",
             tag: "DEFLECT",
           },
           error: {
-            border: "border-amber-500/70",
             text: "text-amber-200",
             bg: "bg-amber-500/5",
             tag: "ERROR",
           },
         };
         const style = styles[tone] || styles.pass;
+        const toneClass = styles[tone] ? tone : "pass";
 
         if (logsEmpty.isConnected) logsEmpty.remove();
 
         const entry = createEl(
           "div",
-          "fade-in rounded-r-md border-l-2 px-2.5 py-1.5 " + style.border + " " + style.bg + " " + style.text
+          "telemetry-entry telemetry-entry--" + toneClass + " fade-in px-2.5 py-1.5 " + style.bg + " " + style.text
         );
         const meta = createEl("div", "flex items-center justify-between gap-2 text-[10px] text-gray-300");
         meta.appendChild(createEl("span", "", now()));
