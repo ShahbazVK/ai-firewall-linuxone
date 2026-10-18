@@ -75,7 +75,7 @@ The sanitizer returns per-type counts instead of the matched values. Those count
 - **Features:** `HashingVectorizer` with `2**18` hashed dimensions (`alternate_sign=False`) over word unigrams and bigrams. Hashing avoids a stored vocabulary and fixes the feature space at inference time; the coefficient vector dominates the artifact size.
 - **Classifier:** `SGDClassifier` with log loss, balanced class weights, and a fixed random seed; it exposes probability estimates through `predict_proba`.
 - **Decision rule:** block when `P(injection) >= 0.50`.
-- **Training data:** a curated synthetic corpus of 215 prompts, currently 139 malicious and 76 benign.
+- **Training data:** a curated synthetic corpus of 218 prompts, currently 139 malicious and 79 benign.
 
 The corpus covers the common injection families:
 
@@ -464,20 +464,20 @@ The response includes the score, sub-metrics, counts, and the transparent weight
 ```json
 {
   "status": "ok",
-  "score": 100.0,
-  "posture_score": 100.0,
+  "score": 97.2,
+  "posture_score": 97.2,
   "score_out_of": 100,
   "band": "green",
-  "recall": 1.0,
-  "recall_percent": 100.0,
+  "recall": 0.95,
+  "recall_percent": 95.0,
   "false_positive_rate": 0.0,
   "false_positive_rate_percent": 0.0,
   "pii_coverage": 1.0,
   "pii_coverage_percent": 100.0,
   "counts": {
     "malicious_total": 20,
-    "attacks_caught": 20,
-    "attacks_missed": 0,
+    "attacks_caught": 19,
+    "attacks_missed": 1,
     "benign_total": 20,
     "false_positives": 0,
     "pii_total": 6,
@@ -489,12 +489,17 @@ The response includes the score, sub-metrics, counts, and the transparent weight
     "pii_coverage": 0.2
   },
   "score_formula": "100 * (0.55 × recall + 0.25 × (1 − false_positive_rate) + 0.20 × pii_coverage)",
-  "missed_attacks": [],
+  "missed_attacks": [
+    {
+      "id": "MIXED-04",
+      "category": "mixed_intent"
+    }
+  ],
   "false_positive_prompts": []
 }
 ```
 
-The score reflects this host, this model artifact, and this fixed 20+20 evaluator set. The current measured baseline is **100.0/100** (green). That perfect result is a small-set demo measurement, not a production guarantee; see **Security Assumptions & Limitations** before quoting it.
+The score reflects this host, this model artifact, and this fixed 20+20 evaluator set. The current measured baseline is **97.2/100** (green) with **zero false positives**. That result is a small-set demo measurement, not a production guarantee; see **Security Assumptions & Limitations** before quoting it.
 
 ### `GET /`
 
@@ -560,7 +565,7 @@ FastAPI's generated OpenAPI documentation.
 
 ### Current demo dataset
 
-The demo uses a **synthetic dataset defined directly in `train_model.py`**: 215 prompts, split into 139 malicious and 76 benign examples. It covers instruction overrides, encoded/obfuscated payloads, multilingual overrides, DAN/developer-mode jailbreaks, system-prompt extraction, credential exfiltration, and hard negatives that look similar to attacks but are ordinary requests. A separate 16-prompt holdout set is used only for evaluation.
+The demo uses a **synthetic dataset defined directly in `train_model.py`**: 218 prompts, split into 139 malicious and 79 benign examples. It covers instruction overrides, encoded/obfuscated payloads, multilingual overrides, DAN/developer-mode jailbreaks, system-prompt extraction, credential exfiltration, and hard negatives that look similar to attacks but are ordinary requests. A separate 16-prompt holdout set is used only for evaluation.
 
 No external dataset is downloaded at build or runtime, and no real personal data is used. The people and identifiers in the examples and documentation are fictitious.
 
@@ -619,7 +624,7 @@ Training accuracy is 100%, which is expected for a small corpus and is **not** e
 
 ## Security Assumptions & Limitations
 
-This project reports measured posture, not a guarantee. The live harness currently observes **100% recall, a 0% false-positive rate, 100% PII coverage, and a 100.0/100 posture score** on its fixed 20-attack / 20-benign evaluator set. Those numbers are useful evidence of behavior on a small curated set; they are not proof that every attack will be stopped.
+This project reports measured posture, not a guarantee. The live harness currently observes **95% recall, a 0% false-positive rate, 100% PII coverage, and a 97.2/100 posture score** on its fixed 20-attack / 20-benign evaluator set. Those numbers are useful evidence of behavior on a small curated set; they are not proof that every attack will be stopped.
 
 - **The ML classifier is lexical and may fail on sophisticated zero-day obfuscations.** HashingVectorizer + SGD works well on the phrasings it has seen, but novel encodings, nested obfuscation, non-English text, long-context attacks, or indirect injections hidden in retrieved documents and tool output can evade it. The held-out harness deliberately records misses rather than hiding them. It classifies the incoming user prompt only; it does not inspect model output or authorize tool calls.
 - **Fail-closed is an availability trade-off.** If `check_injection()` raises, `/chat` and `/upload` return `HTTP 503` with `Security Subsystem Unavailable: Failing Closed to protect data.` and write a `SYSTEM_ERROR` audit event. No untrusted text is forwarded, but the service is unavailable until the classifier recovers. Set `SIMULATE_ML_CRASH=true` to test this path.
