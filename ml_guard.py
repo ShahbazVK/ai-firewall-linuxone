@@ -5,6 +5,7 @@ with it, and explains blocked prompts using the classifier's coefficients. The
 positive class (1) means "prompt injection".
 """
 
+import os
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -14,6 +15,16 @@ from sklearn.feature_extraction import FeatureHasher
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 MODEL_PATH = Path(__file__).with_name("injection_model.pkl")
+
+
+def _raise_if_simulated_crash() -> None:
+    """Simulate an inference outage for fail-closed integration testing.
+
+    The flag is read on every call so operators can exercise the firewall's
+    fail-closed path without restarting the API or swapping the model artifact.
+    """
+    if os.getenv("SIMULATE_ML_CRASH", "").strip().lower() == "true":
+        raise RuntimeError("SIMULATED_ML_CRASH: classifier inference unavailable")
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +43,7 @@ def check_injection(text: str) -> dict[str, bool | float]:
     Returns ``is_injection`` and ``confidence``, where confidence is the
     probability of the label that was predicted (1.0 = certain).
     """
+    _raise_if_simulated_crash()
     model = _load_model()
 
     probabilities = model.predict_proba([text])[0]
@@ -60,6 +72,7 @@ def explain_injection(text: str, top_k: int = 3) -> list[str]:
     if top_k <= 0:
         return []
 
+    _raise_if_simulated_crash()
     model = _load_model()
     try:
         vectorizer = model.named_steps["hash"]

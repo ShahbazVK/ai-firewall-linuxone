@@ -29,6 +29,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from audit_log import benchmark_encryption, log_event, read_events
+from benchmark import run_benchmark
 from firewall import redact_pii
 from ml_guard import check_injection, explain_injection
 from sanitize import SECRET_PATTERNS, sanitize_code
@@ -43,6 +44,9 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 100
 BENCHMARK_ITERATIONS = 100
 LOCKDOWN_MESSAGE = "SYSTEM LOCKDOWN: All traffic blocked due to active threat."
+SECURITY_SUBSYSTEM_MESSAGE = (
+    "Security Subsystem Unavailable: Failing Closed to protect data."
+)
 NEUTRALIZED_FALLBACK = (
     "Please provide a helpful and safe response to the user request."
 )
@@ -218,6 +222,24 @@ def _lockdown_response() -> JSONResponse:
     return JSONResponse(
         status_code=503,
         content={"error": LOCKDOWN_MESSAGE, "lockdown": True},
+    )
+
+
+def _fail_closed_response() -> JSONResponse:
+    """Return a 503 when the security subsystem cannot make a decision.
+
+    No untrusted text may pass through an unavailable classifier. The response
+    includes both ``error`` and ``detail`` so API clients and FastAPI's default
+    error handling can present the same message.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": SECURITY_SUBSYSTEM_MESSAGE,
+            "detail": SECURITY_SUBSYSTEM_MESSAGE,
+            "status": "Service Unavailable",
+            "fail_closed": True,
+        },
     )
 
 
@@ -503,6 +525,42 @@ def _record_request(
     log_event(event)
 
 
+def _record_system_error(
+    *,
+    cleaned_text: str,
+    firewall_log: list[str],
+    source: str,
+    error: str,
+    reason: str,
+    secret_counts: dict[str, int] | None = None,
+) -> None:
+    """Persist a fail-closed classifier failure as a SYSTEM_ERROR event.
+
+    Only redacted text reaches the audit trail. ``reason`` is the exception
+    *type* rather than its message so provider/library internals are not leaked.
+    """
+    pii_counts = _pii_counts_from_logs(firewall_log)
+    normalized_secrets = _secret_counts(secret_counts)
+    log_event(
+        {
+            "kind": "SYSTEM_ERROR",
+            "event_type": "SYSTEM_ERROR",
+            "source": source,
+            "decision": "system_error",
+            "severity": "critical",
+            "error": error,
+            "reason": reason,
+            "pii_counts": pii_counts,
+            "pii_total": sum(pii_counts.values()),
+            "secret_counts": normalized_secrets,
+            "secret_total": sum(normalized_secrets.values()),
+            "preview": _preview(cleaned_text),
+            "firewall_log": firewall_log[-20:],
+            "suspicious_words": [],
+        }
+    )
+
+
 @app.get("/", include_in_schema=False)
 def dashboard() -> FileResponse:
     """Serve the security dashboard so the UI and API share one origin."""
@@ -548,6 +606,32 @@ def crypto_benchmark() -> dict[str, object]:
 
 
 
+@app.api_route(
+    "/api/benchmark/posture",
+    methods=["GET", "POST"],
+    response_model=None,
+)
+def posture_benchmark() -> dict[str, object] | JSONResponse:
+    """Run the held-out security posture harness on this host.
+
+    The harness calls the classifier and redactor directly (bypassing HTTP) so
+    the dashboard can refresh a real measurement without creating audit noise
+    or consuming the chat rate-limit budget.
+    """
+    try:
+        return run_benchmark()
+    except Exception:
+        logger.exception("Security posture benchmark could not run")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": SECURITY_SUBSYSTEM_MESSAGE,
+                "detail": SECURITY_SUBSYSTEM_MESSAGE,
+                "fail_closed": True,
+            },
+        )
+
+
 @app.get("/api/analytics")
 def analytics() -> dict[str, object]:
     """Aggregate decrypted audit events for the SOC dashboard."""
@@ -558,6 +642,7 @@ def analytics() -> dict[str, object]:
     secret_totals = _empty_secret_counts()
     secret_requests = 0
     blocked = 0
+    system_errors = 0
 
     for event in events:
         counts = event.get("pii_counts")
@@ -582,10 +667,14 @@ def analytics() -> dict[str, object]:
         if sum(normalized_secrets.values()) > 0:
             secret_requests += 1
 
+        if str(event.get("decision", "")).lower() == "system_error":
+            system_errors += 1
+            continue
+
         if str(event.get("decision", "")).lower() == "blocked":
             blocked += 1
 
-    total = len(events)
+    total = len(events) - system_errors
     passed = total - blocked
 
     newest_first = sorted(
@@ -641,6 +730,7 @@ def analytics() -> dict[str, object]:
         "injection_blocked": blocked,
         "passed": passed,
         "blocked": blocked,
+        "system_errors": system_errors,
         "block_rate": round((blocked / total) * 100, 1) if total else 0.0,
         "pii_types": pii_totals,
         "secret_types": secret_totals,
@@ -670,7 +760,30 @@ def _screen_text(text: str, *, source: str) -> dict[str, object]:
         if count:
             firewall_log.append(f"Redacted {count} {secret_type}")
 
-    guard = check_injection(cleaned_text)
+    try:
+        guard = check_injection(cleaned_text)
+    except Exception as exc:
+        # Fail closed: an unavailable classifier means no untrusted text is
+        # forwarded. Record the redacted context and exception type only.
+        logger.exception(
+            "ML classifier unavailable during %s screening; failing closed",
+            source,
+        )
+        _record_system_error(
+            cleaned_text=cleaned_text,
+            firewall_log=firewall_log,
+            source=source,
+            error=SECURITY_SUBSYSTEM_MESSAGE,
+            reason=type(exc).__name__,
+            secret_counts=secret_counts,
+        )
+        return {
+            "unavailable": True,
+            "error": SECURITY_SUBSYSTEM_MESSAGE,
+            "cleaned_text": cleaned_text,
+            "firewall_log": firewall_log,
+        }
+
     if guard["is_injection"]:
         confidence = guard["confidence"]
         suspicious_words = explain_injection(cleaned_text)
@@ -775,6 +888,8 @@ def chat(
         return _lockdown_response()
 
     screened = _screen_text(payload.text, source="chat")
+    if screened.get("unavailable"):
+        return _fail_closed_response()
     if screened["blocked"]:
         suspicious_words = list(screened["suspicious_words"])
         neutralized_prompt = neutralize_prompt(str(screened["cleaned_text"]))
@@ -876,6 +991,8 @@ def upload_pdf(
         )
 
     screened = _screen_text(extracted_text, source="upload")
+    if screened.get("unavailable"):
+        return _fail_closed_response()
     body: dict[str, object] = {
         "filename": filename,
         "pages": pages,

@@ -206,6 +206,51 @@
           radial-gradient(1000px circle at 8% -8%, rgba(225, 29, 72, 0.22), transparent 52%),
           radial-gradient(800px circle at 92% 0%, rgba(244, 63, 94, 0.1), transparent 48%);
       }
+      #posture-panel {
+        transition:
+          border-color 220ms ease,
+          background-color 220ms ease,
+          box-shadow 220ms ease;
+      }
+      .posture-score-value {
+        font-variant-numeric: tabular-nums;
+        line-height: 0.95;
+      }
+      #posture-panel[data-band="pending"] #posture-score,
+      #posture-panel[data-band="pending"] #posture-band {
+        color: #94a3b8;
+      }
+      #posture-panel[data-band="red"] {
+        border-color: rgba(244, 63, 94, 0.42);
+        background-color: rgba(127, 29, 29, 0.08);
+        box-shadow: 0 0 55px -34px rgba(244, 63, 94, 0.8);
+      }
+      #posture-panel[data-band="red"] #posture-score,
+      #posture-panel[data-band="red"] #posture-band {
+        color: #fda4af;
+      }
+      #posture-panel[data-band="yellow"] {
+        border-color: rgba(245, 158, 11, 0.36);
+        background-color: rgba(120, 53, 15, 0.08);
+        box-shadow: 0 0 55px -34px rgba(245, 158, 11, 0.7);
+      }
+      #posture-panel[data-band="yellow"] #posture-score,
+      #posture-panel[data-band="yellow"] #posture-band {
+        color: #fcd34d;
+      }
+      #posture-panel[data-band="green"] {
+        border-color: rgba(16, 185, 129, 0.34);
+        background-color: rgba(6, 78, 59, 0.08);
+        box-shadow: 0 0 55px -34px rgba(16, 185, 129, 0.75);
+      }
+      #posture-panel[data-band="green"] #posture-score,
+      #posture-panel[data-band="green"] #posture-band {
+        color: #6ee7b7;
+      }
+      #run-posture-benchmark:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
       .audit-badge {
         display: inline-flex;
         align-items: center;
@@ -226,6 +271,19 @@
         border-color: rgba(244, 63, 94, 0.3);
         background-color: rgba(244, 63, 94, 0.12);
         color: #fda4af;
+      }
+      .audit-badge-error {
+        border-color: rgba(245, 158, 11, 0.4);
+        background-color: rgba(245, 158, 11, 0.12);
+        color: #fcd34d;
+      }
+      .audit-row[data-decision="error"] {
+        background-color: rgba(120, 53, 15, 0.08);
+      }
+      .audit-chip-error {
+        border-color: rgba(245, 158, 11, 0.36);
+        background-color: rgba(245, 158, 11, 0.1);
+        color: #fcd34d;
       }
       .audit-chip {
         display: inline-flex;
@@ -480,6 +538,88 @@
           </a>
         </nav>
       </header>
+
+      <section
+        id="posture-panel"
+        data-band="pending"
+        aria-labelledby="posture-heading"
+        class="relative mt-4 overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/55 p-5 shadow-panel backdrop-blur"
+      >
+        <div class="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl" aria-hidden="true"></div>
+        <div class="relative grid gap-5 lg:grid-cols-[minmax(0,1.25fr)_auto_minmax(0,1fr)] lg:items-center">
+          <div>
+            <div class="flex items-start gap-3">
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 text-emerald-300" aria-hidden="true">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M8.8 12.2l2.1 2.1 4.4-4.5" />
+                </svg>
+              </span>
+              <div>
+                <p class="text-[10px] font-semibold uppercase tracking-[0.22em] text-emerald-300/80">Measured, not marketed</p>
+                <h2 id="posture-heading" class="mt-0.5 text-base font-semibold tracking-tight text-white sm:text-lg">
+                  System Security Posture
+                </h2>
+              </div>
+            </div>
+            <p class="mt-3 max-w-xl text-xs leading-relaxed text-slate-400">
+              A held-out harness runs <span class="text-slate-200">20 attacks</span> and
+              <span class="text-slate-200">20 benign prompts</span> directly against the classifier, then verifies
+              SSN, email, and phone redaction. Score = 55% recall + 25% false-positive avoidance + 20% PII coverage.
+            </p>
+            <p id="posture-meta" class="mt-2 font-mono text-[10px] leading-relaxed text-slate-500" aria-live="polite">
+              Not yet measured. Run the live benchmark to calculate this host's posture.
+            </p>
+          </div>
+
+          <div class="flex items-center justify-center rounded-2xl border border-slate-800/70 bg-slate-950/35 px-6 py-4 lg:min-w-[180px] lg:border-y-0 lg:border-x lg:bg-transparent lg:px-7">
+            <div class="text-center">
+              <p class="text-[9px] font-semibold uppercase tracking-[0.2em] text-slate-500">Posture score</p>
+              <p class="mt-1 flex items-baseline justify-center gap-1">
+                <span id="posture-score" class="posture-score-value font-display text-6xl font-semibold tracking-tight">—</span>
+                <span class="pb-1 font-mono text-[11px] uppercase tracking-[0.12em] text-slate-500">/100</span>
+              </p>
+              <span id="posture-band" class="mt-2 inline-flex rounded-full border border-slate-700 bg-slate-800/60 px-2.5 py-1 font-mono text-[9px] font-semibold tracking-[0.14em]">
+                NOT MEASURED
+              </span>
+            </div>
+          </div>
+
+          <div class="grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            <div class="rounded-xl border border-slate-800/70 bg-slate-950/35 px-3.5 py-3">
+              <p class="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recall</p>
+              <p id="posture-recall" class="mt-1 font-mono text-xl font-semibold text-slate-100">—</p>
+              <p id="posture-recall-detail" class="mt-0.5 text-[9px] text-slate-500">attacks caught</p>
+            </div>
+            <div class="rounded-xl border border-slate-800/70 bg-slate-950/35 px-3.5 py-3">
+              <p class="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">False Positive Rate</p>
+              <p id="posture-fpr" class="mt-1 font-mono text-xl font-semibold text-slate-100">—</p>
+              <p id="posture-fpr-detail" class="mt-0.5 text-[9px] text-slate-500">benign prompts blocked</p>
+            </div>
+            <div class="rounded-xl border border-slate-800/70 bg-slate-950/35 px-3.5 py-3">
+              <p class="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">PII Coverage</p>
+              <p id="posture-pii" class="mt-1 font-mono text-xl font-semibold text-slate-100">—</p>
+              <p id="posture-pii-detail" class="mt-0.5 text-[9px] text-slate-500">SSN · email · phone</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="relative mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 pt-3">
+          <p class="text-[10px] leading-relaxed text-slate-500">
+            Direct classifier + redactor calls · no API traffic · no audit-log side effects
+          </p>
+          <button
+            id="run-posture-benchmark"
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3.5 py-2 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400/60 hover:bg-emerald-500/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 disabled:cursor-wait disabled:opacity-60"
+          >
+            <svg id="posture-run-icon" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 12a8 8 0 1 0 2.3-5.7M4 4v4h4" />
+            </svg>
+            <span id="posture-run-label">Run Live Benchmark</span>
+          </button>
+        </div>
+      </section>
 
       <section
         id="lockdown-panel"

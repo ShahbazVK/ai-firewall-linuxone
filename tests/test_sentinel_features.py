@@ -1,4 +1,4 @@
-"""Regression tests for the Sentinel AI red-team, neutralizer, and benchmark features.
+"""Regression tests for Sentinel AI redaction, red-team, neutralizer, posture, and fail-closed behavior.
 
 Run from the project root:
 
@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -25,6 +26,8 @@ os.environ["AUDIT_KEY_PATH"] = str(Path(_TEMP_DIR.name) / "audit.key")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import benchmark  # noqa: E402
+from audit_log import read_events  # noqa: E402
 from firewall import redact_pii  # noqa: E402
 from main import app, neutralize_prompt  # noqa: E402
 from ml_guard import check_injection  # noqa: E402
@@ -119,6 +122,82 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(body["unit"], "ms/op")
 
 
+class PostureBenchmarkTests(unittest.TestCase):
+    def test_posture_endpoint_returns_measured_metrics(self) -> None:
+        response = client.post("/api/benchmark/posture")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+
+        counts = body["counts"]
+        self.assertEqual(counts["malicious_total"], 20)
+        self.assertEqual(counts["attacks_total"], 20)
+        self.assertEqual(counts["benign_total"], 20)
+        self.assertEqual(counts["pii_total"], 6)
+        self.assertEqual(len(body["pii_results"]), 6)
+        self.assertEqual(body["pii_coverage"], 1.0)
+
+        expected_score = round(
+            (
+                0.55 * body["recall"]
+                + 0.25 * (1 - body["false_positive_rate"])
+                + 0.20 * body["pii_coverage"]
+            )
+            * 100,
+            1,
+        )
+        self.assertEqual(body["score"], expected_score)
+        self.assertEqual(body["posture_score"], expected_score)
+        self.assertIn(body["band"], {"red", "yellow", "green"})
+        self.assertGreaterEqual(body["score"], 0)
+        self.assertLessEqual(body["score"], 100)
+
+        serialized = json.dumps(body)
+        for case in benchmark.PII_CASES:
+            self.assertNotIn(case["raw"], serialized)
+
+
+class FailClosedTests(unittest.TestCase):
+    def test_classifier_crash_returns_503_and_audits_system_error(self) -> None:
+        raw_phone = "469-305-9536"
+        prompt = f"Call {raw_phone}; this request must never pass while the classifier is down."
+        with patch.dict(os.environ, {"SIMULATE_ML_CRASH": "true"}):
+            with self.assertRaises(RuntimeError):
+                check_injection("hello")
+
+            response = client.post("/chat", json={"text": prompt})
+
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertEqual(
+            body["error"],
+            "Security Subsystem Unavailable: Failing Closed to protect data.",
+        )
+        self.assertEqual(body["detail"], body["error"])
+        self.assertTrue(body["fail_closed"])
+        self.assertNotIn(raw_phone, json.dumps(body))
+
+        failures = [
+            event
+            for event in read_events()
+            if event.get("kind") == "SYSTEM_ERROR"
+            or event.get("decision") == "system_error"
+        ]
+        self.assertTrue(failures, "expected a SYSTEM_ERROR audit event")
+        failure = failures[-1]
+        self.assertEqual(failure["kind"], "SYSTEM_ERROR")
+        self.assertEqual(failure["event_type"], "SYSTEM_ERROR")
+        self.assertEqual(failure["decision"], "system_error")
+        self.assertEqual(
+            failure["error"],
+            "Security Subsystem Unavailable: Failing Closed to protect data.",
+        )
+        self.assertNotIn(raw_phone, json.dumps(failure))
+        self.assertIn("[REDACTED_PHONE]", failure["preview"])
+
+        analytics = client.get("/api/analytics").json()
+        self.assertGreaterEqual(analytics["system_errors"], 1)
+
+
 class StaticUiTests(unittest.TestCase):
     def test_battle_arena_contains_required_hooks(self) -> None:
         html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
@@ -146,8 +225,26 @@ class StaticUiTests(unittest.TestCase):
             'id="crypto-latency"',
             "LinuxONE Hardware Crypto:",
             "(Enterprise Grade)",
+            "System Security Posture",
+            'id="posture-panel"',
+            'id="posture-score"',
+            'id="posture-recall"',
+            'id="posture-fpr"',
+            'id="posture-pii"',
+            "Run Live Benchmark",
         ):
             self.assertIn(marker, html)
+
+    def test_admin_client_contains_posture_and_fail_closed_hooks(self) -> None:
+        script = (PROJECT_ROOT / "admin.js").read_text(encoding="utf-8")
+        for marker in (
+            "/api/benchmark/posture",
+            "renderPosture",
+            "SYSTEM ERROR",
+            "Fail-closed · HTTP 503",
+            "Run Live Benchmark",
+        ):
+            self.assertIn(marker, script)
 
 
 if __name__ == "__main__":

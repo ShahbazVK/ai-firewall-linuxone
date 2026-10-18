@@ -33,6 +33,19 @@ const refs = {
   threatSummary: document.getElementById("threat-summary"),
   threatBlockedCount: document.getElementById("threat-blocked-count"),
   cryptoLatency: document.getElementById("crypto-latency"),
+  posturePanel: document.getElementById("posture-panel"),
+  postureScore: document.getElementById("posture-score"),
+  postureBand: document.getElementById("posture-band"),
+  postureRecall: document.getElementById("posture-recall"),
+  postureRecallDetail: document.getElementById("posture-recall-detail"),
+  postureFpr: document.getElementById("posture-fpr"),
+  postureFprDetail: document.getElementById("posture-fpr-detail"),
+  posturePii: document.getElementById("posture-pii"),
+  posturePiiDetail: document.getElementById("posture-pii-detail"),
+  postureMeta: document.getElementById("posture-meta"),
+  postureRunButton: document.getElementById("run-posture-benchmark"),
+  postureRunIcon: document.getElementById("posture-run-icon"),
+  postureRunLabel: document.getElementById("posture-run-label"),
   legendPassed: document.getElementById("legend-passed"),
   legendBlocked: document.getElementById("legend-blocked"),
   lockdownPanel: document.getElementById("lockdown-panel"),
@@ -50,6 +63,7 @@ let piiChart = null;
 let refreshing = false;
 let lockdownActive = false;
 let lockdownBusy = false;
+let postureBusy = false;
 let latestChartState = { passed: 0, blocked: 0, piiTypes: {} };
 
 function toCount(value) {
@@ -393,6 +407,16 @@ function createTriggerCell(event, blocked) {
   const wrap = document.createElement("div");
   wrap.className = "flex max-w-[250px] flex-wrap gap-1.5";
 
+  if (event.decision === "system_error") {
+    const unavailable = document.createElement("span");
+    unavailable.className = "audit-trigger-empty";
+    unavailable.textContent = "—";
+    unavailable.title = "Classifier unavailable; no attribution was computed";
+    unavailable.setAttribute("aria-label", "Classifier unavailable");
+    wrap.appendChild(unavailable);
+    return wrap;
+  }
+
   if (!blocked) {
     const empty = document.createElement("span");
     empty.className = "audit-trigger-empty";
@@ -427,6 +451,16 @@ function createTriggerCell(event, blocked) {
 function createSignalCell(event, blocked) {
   const wrap = document.createElement("div");
   wrap.className = "w-[160px]";
+
+  if (event.decision === "system_error") {
+    wrap.appendChild(createChip("ML unavailable", "audit-chip-error"));
+    const note = document.createElement("p");
+    note.className = "mt-1.5 font-mono text-[9px] text-amber-300/80";
+    note.textContent = "Fail-closed · HTTP 503";
+    note.title = "The classifier failed, so the request was not allowed through.";
+    wrap.appendChild(note);
+    return wrap;
+  }
 
   if (!blocked) {
     wrap.appendChild(createChip("✓ ML cleared", "audit-chip-pass"));
@@ -526,9 +560,10 @@ function renderLog(events, totalEvents) {
 
   for (const event of items) {
     const blocked = event.decision === "blocked";
+    const systemError = event.decision === "system_error";
     const row = document.createElement("tr");
     row.className = "audit-row";
-    row.dataset.decision = blocked ? "blocked" : "passed";
+    row.dataset.decision = systemError ? "error" : blocked ? "blocked" : "passed";
 
     const timestamp = new Date(event.timestamp);
     const hasTimestamp = !Number.isNaN(timestamp.getTime());
@@ -543,8 +578,14 @@ function renderLog(events, totalEvents) {
     row.appendChild(createCell("px-5 py-3.5 align-top", timeWrap));
 
     const verdict = document.createElement("span");
-    verdict.className = `audit-badge ${blocked ? "audit-badge-blocked" : "audit-badge-passed"}`;
-    verdict.textContent = blocked ? "BLOCKED" : "PASSED";
+    verdict.className = `audit-badge ${
+      systemError
+        ? "audit-badge-error"
+        : blocked
+          ? "audit-badge-blocked"
+          : "audit-badge-passed"
+    }`;
+    verdict.textContent = systemError ? "SYSTEM ERROR" : blocked ? "BLOCKED" : "PASSED";
     row.appendChild(createCell("px-4 py-3.5 align-top", verdict));
 
     const piiCounts = event.pii_counts && typeof event.pii_counts === "object"
@@ -778,11 +819,127 @@ function waitForCharts() {
   }, 100);
 }
 
+function formatPercent(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return `${Number.isInteger(parsed) ? parsed : parsed.toFixed(1)}%`;
+}
+
+function renderPosture(data) {
+  const score = Number(data.score);
+  if (!Number.isFinite(score)) {
+    throw new Error("Posture benchmark returned an invalid score");
+  }
+
+  const counts = data.counts && typeof data.counts === "object" ? data.counts : {};
+  const band = ["red", "yellow", "green"].includes(data.band)
+    ? data.band
+    : score > 80
+      ? "green"
+      : score >= 50
+        ? "yellow"
+        : "red";
+  const bandLabel = band === "green"
+    ? "GREEN · HEALTHY"
+    : band === "yellow"
+      ? "YELLOW · AT RISK"
+      : "RED · CRITICAL";
+
+  refs.posturePanel.dataset.band = band;
+  refs.postureScore.textContent = String(Math.round(score));
+  refs.postureBand.textContent = bandLabel;
+
+  const recall = Number(data.recall_percent ?? Number(data.recall) * 100);
+  const fpr = Number(
+    data.false_positive_rate_percent ?? Number(data.false_positive_rate) * 100,
+  );
+  const pii = Number(data.pii_coverage_percent ?? Number(data.pii_coverage) * 100);
+
+  refs.postureRecall.textContent = formatPercent(recall);
+  refs.postureRecallDetail.textContent =
+    `${toCount(counts.attacks_caught)}/${toCount(counts.attacks_total)} attacks caught`;
+  refs.postureFpr.textContent = formatPercent(fpr);
+  refs.postureFprDetail.textContent =
+    `${toCount(counts.false_positives)}/${toCount(counts.benign_total)} benign prompts blocked`;
+  refs.posturePii.textContent = formatPercent(pii);
+  refs.posturePiiDetail.textContent =
+    `${toCount(counts.pii_passed)}/${toCount(counts.pii_total)} SSN · email · phone checks`;
+
+  const elapsed = Number(data.elapsed_ms);
+  const timing = Number.isFinite(elapsed) ? ` · ${elapsed.toFixed(0)} ms` : "";
+  refs.postureMeta.textContent =
+    `${toCount(counts.attacks_caught)}/${toCount(counts.attacks_total)} attacks caught · ` +
+    `${toCount(counts.false_positives)}/${toCount(counts.benign_total)} false positives · ` +
+    `${toCount(counts.pii_passed)}/${toCount(counts.pii_total)} PII redacted · ` +
+    `score ${score.toFixed(1)}/100${timing}`;
+
+  const missed = Array.isArray(data.missed_attacks)
+    ? data.missed_attacks.map((item) => item.id).filter(Boolean)
+    : [];
+  const falsePositives = Array.isArray(data.false_positive_prompts)
+    ? data.false_positive_prompts.map((item) => item.id).filter(Boolean)
+    : [];
+  refs.postureMeta.title =
+    `Missed attacks: ${missed.length ? missed.join(", ") : "none"} | ` +
+    `False positives: ${falsePositives.length ? falsePositives.join(", ") : "none"}`;
+}
+
+async function runPostureBenchmark({ silent = false } = {}) {
+  if (postureBusy) return;
+  postureBusy = true;
+  refs.postureRunButton.disabled = true;
+  refs.postureRunIcon.classList.add("spin");
+  refs.postureRunLabel.textContent = "Running…";
+  if (!silent) {
+    refs.postureMeta.textContent =
+      "Running 20 held-out attacks, 20 benign prompts, and 6 PII checks…";
+  }
+
+  try {
+    const response = await fetch("/api/benchmark/posture", {
+      method: "POST",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (parseError) {
+      data = {};
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || `Benchmark failed (HTTP ${response.status})`);
+    }
+
+    renderPosture(data);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown benchmark error";
+    if (!refs.postureScore.textContent.trim() || refs.postureScore.textContent === "—") {
+      refs.posturePanel.dataset.band = "pending";
+      refs.postureBand.textContent = "UNAVAILABLE";
+    }
+    refs.postureMeta.textContent =
+      `${message} The firewall remains fail-closed; no measured score is being claimed.`;
+    refs.postureMeta.title = message;
+  } finally {
+    postureBusy = false;
+    refs.postureRunButton.disabled = false;
+    refs.postureRunIcon.classList.remove("spin");
+    refs.postureRunLabel.textContent = "Run Live Benchmark";
+  }
+}
+
 function init() {
   if (!initializeCharts()) waitForCharts();
 
   refs.refreshButton.addEventListener("click", () => {
     void loadAnalytics();
+  });
+
+  refs.postureRunButton.addEventListener("click", () => {
+    void runPostureBenchmark();
   });
 
   refs.lockdownButton.addEventListener("click", () => {
@@ -792,6 +949,7 @@ function init() {
   renderLockdown(lockdownActive);
   void loadAnalytics();
   void loadBenchmark();
+  void runPostureBenchmark({ silent: true });
   window.setInterval(() => {
     if (!document.hidden) void loadAnalytics({ silent: true });
   }, REFRESH_INTERVAL_MS);
