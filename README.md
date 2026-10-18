@@ -75,11 +75,11 @@ The sanitizer returns per-type counts instead of the matched values. Those count
 - **Features:** `HashingVectorizer` with `2**18` hashed dimensions (`alternate_sign=False`) over word unigrams and bigrams. Hashing avoids a stored vocabulary and fixes the feature space at inference time; the coefficient vector dominates the artifact size.
 - **Classifier:** `SGDClassifier` with log loss, balanced class weights, and a fixed random seed; it exposes probability estimates through `predict_proba`.
 - **Decision rule:** block when `P(injection) >= 0.50`.
-- **Training data:** a curated synthetic corpus of 144 prompts, currently 73 malicious and 71 benign.
+- **Training data:** a curated synthetic corpus of 184 prompts, currently 113 malicious and 71 benign.
 
 The corpus covers the common injection families:
 
-- **Instruction override:** "ignore all previous rules", "forget everything about rules", "ignore everything".
+- **Instruction override:** "ignore all previous rules", "forget everything about rules", "ignore everything", plus combinatorial verbs such as "ignore or forget", "forget or ignore", and "disregard" paired with patient-record exfiltration.
 - **Jailbreak personas:** DAN, developer mode, unrestricted or unfiltered models, role-play.
 - **Prompt extraction:** "system prompt reveal", "print your instructions", "repeat the text above".
 - **Exfiltration:** database credentials, admin passwords, API keys, `.env` contents.
@@ -95,11 +95,14 @@ A linear classifier has one coefficient per hashed feature. `explain_injection()
 Blocked detections expose those terms as `suspicious_words`, and the audit log names the same trigger words:
 
 ```json
-"firewall_log": ["Blocked: prompt injection detected (trigger words: rules, ignore)"],
+"firewall_log": [
+  "Blocked: prompt injection detected",
+  "Decoded intent (trigger words): rules, ignore"
+],
 "suspicious_words": ["rules", "ignore"]
 ```
 
-This lets an analyst review why a request was stopped without exposing model internals. The terms are learned associations, not proof of intent, and should be read alongside the prompt and confidence.
+The Battle Arena renders the same `suspicious_words` under a **Decoded intent** label in neutralized chat bubbles and in PDF/blocked responses. This lets an analyst review why a request was stopped without exposing model internals. The terms are learned associations, not proof of intent, and should be read alongside the prompt and confidence.
 
 ### Neutralizer
 
@@ -461,20 +464,20 @@ The response includes the score, sub-metrics, counts, and the transparent weight
 ```json
 {
   "status": "ok",
-  "score": 87.8,
-  "posture_score": 87.8,
+  "score": 85.0,
+  "posture_score": 85.0,
   "score_out_of": 100,
   "band": "green",
-  "recall": 0.8,
-  "recall_percent": 80.0,
+  "recall": 0.75,
+  "recall_percent": 75.0,
   "false_positive_rate": 0.05,
   "false_positive_rate_percent": 5.0,
   "pii_coverage": 1.0,
   "pii_coverage_percent": 100.0,
   "counts": {
     "malicious_total": 20,
-    "attacks_caught": 16,
-    "attacks_missed": 4,
+    "attacks_caught": 15,
+    "attacks_missed": 5,
     "benign_total": 20,
     "false_positives": 1,
     "pii_total": 6,
@@ -490,13 +493,14 @@ The response includes the score, sub-metrics, counts, and the transparent weight
     {"id": "ENC-01", "category": "encoded"},
     {"id": "ENC-02", "category": "encoded"},
     {"id": "ENC-04", "category": "encoded"},
+    {"id": "MULTI-02", "category": "multilingual"},
     {"id": "MULTI-04", "category": "multilingual"}
   ],
   "false_positive_prompts": [{"id": "BEN-10"}]
 }
 ```
 
-The score reflects this host, this model artifact, and this fixed held-out set. The current measured baseline is **87.8/100** (green), not 100%. See **Security Assumptions & Limitations** before quoting it.
+The score reflects this host, this model artifact, and this fixed held-out set. The current measured baseline is **85.0/100** (green), not 100%. See **Security Assumptions & Limitations** before quoting it.
 
 ### `GET /`
 
@@ -621,7 +625,7 @@ Training accuracy is 100%, which is expected for a small corpus and is **not** e
 
 ## Security Assumptions & Limitations
 
-This project reports measured posture, not a guarantee. The live harness currently observes **80% recall, a 5% false-positive rate, 100% PII coverage, and an 87.8/100 posture score** on its fixed held-out set. Those numbers are useful evidence of behavior; they are not proof that every attack will be stopped.
+This project reports measured posture, not a guarantee. The live harness currently observes **75% recall, a 5% false-positive rate, 100% PII coverage, and an 85.0/100 posture score** on its fixed held-out set. Those numbers are useful evidence of behavior; they are not proof that every attack will be stopped.
 
 - **The ML classifier is lexical and may fail on sophisticated zero-day obfuscations.** HashingVectorizer + SGD works well on the phrasings it has seen, but novel encodings, nested obfuscation, non-English text, long-context attacks, or indirect injections hidden in retrieved documents and tool output can evade it. The held-out harness deliberately records misses rather than hiding them. It classifies the incoming user prompt only; it does not inspect model output or authorize tool calls.
 - **Fail-closed is an availability trade-off.** If `check_injection()` raises, `/chat` and `/upload` return `HTTP 503` with `Security Subsystem Unavailable: Failing Closed to protect data.` and write a `SYSTEM_ERROR` audit event. No untrusted text is forwarded, but the service is unavailable until the classifier recovers. Set `SIMULATE_ML_CRASH=true` to test this path.

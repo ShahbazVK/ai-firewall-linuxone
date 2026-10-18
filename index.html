@@ -636,7 +636,7 @@
             </div>
           </div>
 
-          <div id="security-logs" aria-live="polite" class="scrollbar flex-1 space-y-2 overflow-y-auto px-3 py-3 font-mono text-[11px] leading-relaxed">
+          <div id="security-logs" aria-live="polite" class="scrollbar flex-1 space-y-2 overflow-y-auto px-3 py-3 font-mono text-[11px] leading-relaxed text-gray-200">
             <div id="logs-empty" class="flex h-full flex-col items-center justify-center px-6 text-center font-sans">
               <div class="mb-3 grid h-10 w-10 place-items-center rounded-xl border border-slate-800 bg-slate-900 text-slate-500">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -832,25 +832,25 @@
         const styles = {
           pass: {
             border: "border-emerald-500/60",
-            text: "text-emerald-300",
+            text: "text-emerald-200",
             bg: "bg-emerald-500/5",
             tag: "PASS",
           },
           block: {
             border: "border-red-500/70",
-            text: "text-red-300",
+            text: "text-red-200",
             bg: "bg-red-500/5",
             tag: "BLOCK",
           },
           neutralize: {
             border: "border-rose-500/60",
-            text: "text-rose-200",
+            text: "text-rose-100",
             bg: "bg-rose-500/5",
             tag: "DEFLECT",
           },
           error: {
             border: "border-amber-500/70",
-            text: "text-amber-300",
+            text: "text-amber-200",
             bg: "bg-amber-500/5",
             tag: "ERROR",
           },
@@ -863,7 +863,7 @@
           "div",
           "fade-in rounded-r-md border-l-2 px-2.5 py-1.5 " + style.border + " " + style.bg + " " + style.text
         );
-        const meta = createEl("div", "flex items-center justify-between gap-2 text-[10px] text-slate-500");
+        const meta = createEl("div", "flex items-center justify-between gap-2 text-[10px] text-gray-300");
         meta.appendChild(createEl("span", "", now()));
         meta.appendChild(createEl("span", "font-semibold tracking-wide", style.tag));
 
@@ -978,9 +978,8 @@
 
       function addNeutralizedMessage(data) {
         hideChatEmpty();
-        const words = Array.isArray(data.suspicious_words) && data.suspicious_words.length
-          ? data.suspicious_words.join(", ")
-          : "malicious instructions";
+        const intentWords = decodedIntentWords(data);
+        const words = intentWords || "malicious instructions";
         const confidence = typeof data.confidence === "number"
           ? Math.round(data.confidence * 100) + "%"
           : "unknown";
@@ -1018,11 +1017,31 @@
         );
         bubble.appendChild(badgeRow);
 
+        const intentWrap = createEl(
+          "div",
+          "mt-2 rounded-lg border border-rose-500/25 bg-rose-950/25 p-2"
+        );
+        intentWrap.appendChild(
+          createEl(
+            "p",
+            "text-[9px] uppercase tracking-[0.14em] text-rose-200/70",
+            "Decoded intent"
+          )
+        );
+        intentWrap.appendChild(
+          createEl(
+            "p",
+            "mt-0.5 break-words font-mono text-[10px] leading-relaxed text-rose-100",
+            words
+          )
+        );
+        bubble.appendChild(intentWrap);
+
         bubble.appendChild(
           createEl(
             "p",
-            "font-semibold text-rose-50",
-            "Threat Neutralized. The AI safely processed your request after stripping: " + words + "."
+            "mt-2 font-semibold text-rose-50",
+            "Threat Neutralized. The unsafe clauses were stripped before inference."
           )
         );
 
@@ -1114,6 +1133,25 @@
           : "";
       }
 
+      function decodedIntentWords(data) {
+        return Array.isArray(data.suspicious_words)
+          ? data.suspicious_words.filter(Boolean).join(", ")
+          : "";
+      }
+
+      function blockedDetail(data) {
+        const confidence =
+          typeof data.confidence === "number"
+            ? Math.round(data.confidence * 100) + "%"
+            : "unknown";
+        const intent = decodedIntentWords(data);
+        return (
+          "Prompt injection detected · confidence " +
+          confidence +
+          (intent ? " · Decoded intent: " + intent : "")
+        );
+      }
+
       function uploadNote(data) {
         const notes = [];
         const pages = Number(data.pages);
@@ -1187,11 +1225,7 @@
               typeof data.confidence === "number"
                 ? Math.round(data.confidence * 100) + "%"
                 : "unknown";
-            addMessage(
-              "blocked",
-              "PDF Blocked by Firewall",
-              "Prompt injection detected · confidence " + confidence
-            );
+            addMessage("blocked", "PDF Blocked by Firewall", blockedDetail(data));
             logs.forEach((entry) => addLog(entry, "block"));
             addLog("Injection confidence: " + confidence, "block");
             setShield("threat", "PROBE BLOCKED", "PDF injection blocked before inference");
@@ -1283,7 +1317,7 @@
           addMessage(
             "blocked",
             "Message Blocked by Firewall",
-            "Prompt injection detected · confidence " + confidence
+            blockedDetail(data)
           );
           logs.forEach((entry) => addLog(entry, "block"));
           addLog("Injection confidence: " + confidence, "block");

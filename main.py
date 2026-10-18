@@ -788,10 +788,8 @@ def _screen_text(text: str, *, source: str) -> dict[str, object]:
         confidence = guard["confidence"]
         suspicious_words = explain_injection(cleaned_text)
         trigger_words = ", ".join(suspicious_words) if suspicious_words else "none"
-        firewall_log.append(
-            "Blocked: prompt injection detected "
-            f"(trigger words: {trigger_words})"
-        )
+        firewall_log.append("Blocked: prompt injection detected")
+        firewall_log.append(f"Decoded intent (trigger words): {trigger_words}")
         _record_request(
             cleaned_text=cleaned_text,
             firewall_log=firewall_log,
